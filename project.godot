@@ -14,6 +14,11 @@ config/name="ReefSentinel"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+Telemetry="*uid://bwoqnltiklh63"
+GameProgress="*uid://bfa8ik1emqxlq"
+
 [display]
 
 window/stretch/mode="canvas_items"
