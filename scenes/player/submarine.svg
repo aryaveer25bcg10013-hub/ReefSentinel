@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="112" height="64" viewBox="0 0 112 64">
+  <!-- Top-down, facing right (+X). Centre of the image is the sub's origin. -->
+  <g stroke="#1f2a3a" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+    <!-- propeller blur -->
+    <rect x="3" y="12" width="7" height="40" rx="3.5" fill="#4a5568" opacity="0.85"/>
+    <!-- dive planes -->
+    <polygon points="38,17 28,3 48,3 56,17" fill="#d99a2b"/>
+    <polygon points="38,47 28,61 48,61 56,47" fill="#d99a2b"/>
+    <!-- hull -->
+    <rect x="9" y="16" width="94" height="32" rx="16" fill="#f2c14e"/>
+  </g>
+  <rect x="20" y="20" width="72" height="7" rx="3.5" fill="#fbe08a" opacity="0.8"/>
+  <rect x="20" y="38" width="76" height="6" rx="3" fill="#d99a2b" opacity="0.9"/>
+  <!-- hull stripe -->
+  <rect x="68" y="19" width="6" height="26" fill="#e0553d" opacity="0.9"/>
+  <!-- conning tower -->
+  <circle cx="50" cy="32" r="11" fill="#e8a838" stroke="#1f2a3a" stroke-width="3"/>
+  <circle cx="50" cy="32" r="6" fill="#6fd3e8" stroke="#1f2a3a" stroke-width="2"/>
+  <circle cx="48" cy="30" r="2" fill="#ffffff" opacity="0.9"/>
+  <!-- nose light -->
+  <circle cx="95" cy="32" r="4.5" fill="#fff7c2" stroke="#1f2a3a" stroke-width="2"/>
+</svg>

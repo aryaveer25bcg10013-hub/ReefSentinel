@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/levels/level_base.gd" id="1_levelbase"]
+
+[node name="LevelHarrow" type="Node2D"]
+script = ExtResource("1_levelbase")
+island_id = "harrow"
+island_name = "Harrow"
+biome = 2
+wave_count = 4
+enemies_first_wave = 5
+enemies_per_wave_step = 3
+level_seed = 303
+genome_acoustic_armor = 0.3
+genome_spiky_shell = 0.25
+genome_heat_sink = 0.35
+genome_speed_multiplier = 1.12
+genome_max_health = 70.0
+enemy_touch_damage = 10.0

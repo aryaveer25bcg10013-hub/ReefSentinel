@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/levels/level_base.gd" id="1_levelbase"]
+
+[node name="LevelQuietBelt" type="Node2D"]
+script = ExtResource("1_levelbase")
+island_id = "quiet_belt"
+island_name = "Quiet Belt"
+biome = 1
+wave_count = 4
+enemies_first_wave = 4
+enemies_per_wave_step = 2
+level_seed = 202
+genome_acoustic_armor = 0.18
+genome_spiky_shell = 0.12
+genome_heat_sink = 0.2
+genome_speed_multiplier = 1.0
+genome_max_health = 55.0
+enemy_touch_damage = 8.0

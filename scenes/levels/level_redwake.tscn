@@ -1,0 +1,19 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/levels/level_base.gd" id="1_levelbase"]
+
+[node name="LevelRedwake" type="Node2D"]
+script = ExtResource("1_levelbase")
+island_id = "redwake"
+island_name = "Redwake"
+biome = 0
+wave_count = 3
+enemies_first_wave = 3
+enemies_per_wave_step = 2
+level_seed = 101
+genome_acoustic_armor = 0.05
+genome_spiky_shell = 0.05
+genome_heat_sink = 0.05
+genome_speed_multiplier = 0.9
+genome_max_health = 40.0
+enemy_touch_damage = 6.0

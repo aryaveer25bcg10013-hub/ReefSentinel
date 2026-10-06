@@ -1,0 +1,20 @@
+[gd_scene format=3 uid="uid://bohgddejbnw1w"]
+
+[ext_resource type="PackedScene" path="res://scenes/player/submarine.tscn" id="2_04yl2"]
+[ext_resource type="Script" uid="uid://bldouk2voffjq" path="res://scenes/player/test_dummy.gd" id="2_uy46w"]
+
+[sub_resource type="CircleShape2D" id="CircleShape2D_biwu8"]
+radius = 24.0
+
+[node name="Node2D" type="Node2D" unique_id=1573841381]
+
+[node name="dummy" type="StaticBody2D" parent="." unique_id=590636836]
+position = Vector2(800, 0)
+script = ExtResource("2_uy46w")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="dummy" unique_id=1327754562]
+shape = SubResource("CircleShape2D_biwu8")
+
+[node name="Submarine" parent="." unique_id=632081617 instance=ExtResource("2_04yl2")]
+
+[node name="Camera2D" type="Camera2D" parent="Submarine" unique_id=720720498]

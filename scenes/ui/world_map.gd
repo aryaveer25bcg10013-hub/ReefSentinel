@@ -11,6 +11,14 @@ const ISLAND_BUTTONS := {
 	"mire": "Mire",
 }
 
+# Dive scene for each island. Levels 4 and 5 are not built yet, so pressing
+# their banner reports that instead of failing a scene change.
+const LEVEL_SCENES := {
+	"redwake": "res://scenes/levels/level_redwake.tscn",
+	"quiet_belt": "res://scenes/levels/level_quiet_belt.tscn",
+	"harrow": "res://scenes/levels/level_harrow.tscn",
+}
+
 # ================================================================ CONSTANTS
 
 # Dive-site pin for each level (same order as above). The banner floats above it.
@@ -305,10 +313,14 @@ func _banner_box(face: Color, edge: Color) -> StyleBoxFlat:
 
 
 func _on_island_pressed(id: String) -> void:
-	if GameProgress.is_unlocked(id):
-		print("TODO: load level %s (waits for Role B's reef scenes)" % id)
-	else:
+	if not GameProgress.is_unlocked(id):
 		print("Locked! Clear the previous reef to dive at %s." % id)
+		return
+	var path: String = LEVEL_SCENES.get(id, "")
+	if path == "" or not ResourceLoader.exists(path):
+		print("No dive scene yet for %s." % id)
+		return
+	get_tree().change_scene_to_file(path)
 
 # ================================================================ BUILD (geometry + layout, runs once)
 
