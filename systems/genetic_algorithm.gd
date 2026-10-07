@@ -3,6 +3,15 @@ extends RefCounted
 ## const GeneticAlgorithm := preload("res://systems/genetic_algorithm.gd")
 
 const WEAPON_IDS := ["sonic", "bubble", "thermal"]
+
+# // PROPOSED CHANGE: selection pressure is applied ONLY by the two offensive
+# // weapons. "bubble" is now a defensive dome (it deals no damage and blocks
+# // contact damage), so letting the swarm evolve resistance to it would be
+# // evolutionarily meaningless — and it would let a player accidentally teach
+# // the reef to resist a shield. Telemetry still records every "bubble" shot
+# // (the log_shot API is frozen and unchanged); fitness() simply ignores the
+# // fractions of weapons that cannot hurt anything.
+const DAMAGE_WEAPON_IDS := ["sonic", "thermal"]
 const ELITE_COUNT := 2
 const TOURNAMENT_SIZE := 3
 const MUTATION_RATE := 0.35
@@ -28,10 +37,11 @@ static func seed_population(size: int) -> Array[InvasiveGenome]:
 ## Fitness = how well a genome resists the weapon mix the player actually used.
 ## usage: {weapon_id: fraction}. Higher is fitter.
 static func fitness(genome: InvasiveGenome, usage: Dictionary) -> float:
+	var weights := damage_weights(usage)
 	var total := 0.0
 	var expected_damage := 0.0
-	for w in WEAPON_IDS:
-		var u: float = usage.get(w, 0.0)
+	for w: String in weights.keys():
+		var u: float = weights[w]
 		total += u
 		expected_damage += u * genome.damage_multiplier_for(w)
 	expected_damage = (expected_damage / total) if total > 0.0 else 1.0
@@ -41,6 +51,27 @@ static func fitness(genome: InvasiveGenome, usage: Dictionary) -> float:
 	investment += maxf(0.0, genome.speed_multiplier - 1.0)
 	investment += maxf(0.0, (genome.max_health - 50.0) / 100.0)
 	return resistance * health_factor / (1.0 + METABOLIC_COST * investment)
+
+
+## Usage fractions restricted to the offensive weapons, renormalised. If the
+## player fired nothing offensive this wave (spammed the defensive dome only),
+## the pressure is split evenly between the two offensive weapons rather than
+## falling back to the dome — evolution never stalls and never learns to resist
+## a shield.
+static func damage_weights(usage: Dictionary) -> Dictionary:
+	var out := {}
+	var total := 0.0
+	for w: String in DAMAGE_WEAPON_IDS:
+		var u := maxf(0.0, float(usage.get(w, 0.0)))
+		out[w] = u
+		total += u
+	if total <= 0.0001:
+		for w: String in DAMAGE_WEAPON_IDS:
+			out[w] = 1.0 / float(DAMAGE_WEAPON_IDS.size())
+		return out
+	for w: String in out.keys():
+		out[w] = float(out[w]) / total
+	return out
 
 
 static func evolve(population: Array[InvasiveGenome], usage: Dictionary, next_size: int) -> Array[InvasiveGenome]:
