@@ -8,6 +8,7 @@ const MAX_SPEED := 1.8
 const MIN_HEALTH := 30.0
 const MAX_HEALTH := 120.0
 
+@export var species_id := "drifter_jelly"
 @export var acoustic_armor := 0.0
 @export var spiky_shell := 0.0
 @export var heat_sink := 0.0
@@ -38,6 +39,7 @@ func clamp_traits() -> void:
 
 func to_dict() -> Dictionary:
 	return {
+		"species_id": species_id,
 		"acoustic_armor": snappedf(acoustic_armor, 0.001),
 		"spiky_shell": snappedf(spiky_shell, 0.001),
 		"heat_sink": snappedf(heat_sink, 0.001),

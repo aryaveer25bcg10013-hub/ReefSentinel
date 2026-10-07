@@ -15,6 +15,7 @@ signal wave_completed(wave_number: int)
 signal reef_cleared(reef_id: String)
 
 const GeneticAlgorithm := preload("res://systems/genetic_algorithm.gd")
+const SpeciesDB := preload("res://systems/species_db.gd")
 
 # Jitter applied around a level's starting genome (level difficulty data) when
 # founding the population, so an island still starts as hard as its .tscn says.
@@ -24,6 +25,9 @@ const TEMPLATE_HEALTH_JITTER := 0.10
 # Keeps any fallback spawn clear of the arena walls.
 const SPAWN_MARGIN := 80.0
 const SPAWN_JITTER := 26.0
+# Keeps a jittered spawn at least as far from the arena centre as the floor's
+# own spawn rule (reef_floor.SPAWN_MIN_CENTRE_DIST).
+const SPAWN_MIN_CENTRE_DIST := 340.0
 
 @export var reef_id := "redwake"
 @export var enemy_scene: PackedScene
@@ -41,6 +45,7 @@ var population: Array[InvasiveGenome] = []
 
 var _alive := 0
 var _running := false
+var _spawned_total := 0
 
 # Set by the level through configure().
 var _genome_template: InvasiveGenome = null
@@ -48,6 +53,18 @@ var _spawn_points: Array[Vector2] = []
 var _arena := Vector2(1600, 900)
 var _touch_damage := 0.0
 var _point_cursor := 0
+
+# W7 majority-weighted spawning (additive).
+var _spawn_zones: Array[Dictionary] = []      # {id, label, centre, radius, points}
+var _zone_ids: Array[String] = []
+var _zone_cycles: Dictionary = {}             # species id -> Array[String]
+var _zone_cursors: Dictionary = {}            # "species|zone" -> int
+var _spawn_zone_report: Dictionary = {}       # zone id -> {species id -> count}
+var _floor: Object = null                     # reef floor, for validated points
+var _prev_profile: Dictionary = {}
+var _profile_delta: Dictionary = {}
+var _prev_mean_traits: Dictionary = {}
+var _mean_traits: Dictionary = {}
 
 
 func _ready() -> void:
@@ -72,6 +89,24 @@ func configure(island_id: String, wave_total: int, first_wave: int, wave_step: i
 	_touch_damage = touch_damage
 
 
+## Additive: hand the wave manager the level's named spawn zones (from
+## reef_floor.spawn_zones()) so species can arrive predominantly at home.
+func set_spawn_zones(zones: Array) -> void:
+	_spawn_zones.clear()
+	_zone_ids.clear()
+	for z: Dictionary in zones:
+		var entry := z.duplicate()
+		_spawn_zones.append(entry)
+		_zone_ids.append(String(entry["id"]))
+	_zone_cycles.clear()
+	_zone_cursors.clear()
+
+
+## Additive: the floor node, used to validate jittered spawn points.
+func set_floor_source(floor_node: Object) -> void:
+	_floor = floor_node
+
+
 func start() -> void:
 	if _running:
 		return
@@ -85,8 +120,16 @@ func start_reef(id: String = "") -> void:
 	if id != "":
 		reef_id = id
 	wave_number = 0
+	_spawned_total = 0
+	_spawn_zone_report.clear()
 	Telemetry.reset_run()
 	population = _seed_population(_enemy_count_for(1))
+	# Baseline the adaptation readout against the founding population, so the
+	# first generation's delta describes wave 1 -> wave 2 honestly.
+	_prev_profile = resistance_profile()
+	_profile_delta.clear()
+	_prev_mean_traits = GeneticAlgorithm.mean_traits(population)
+	_mean_traits = _prev_mean_traits.duplicate()
 	_running = true
 	var player := get_tree().get_first_node_in_group("player")
 	if player != null and player.has_signal("died") and not player.is_connected("died", stop):
@@ -114,6 +157,66 @@ func alive_count() -> int:
 
 func is_running() -> bool:
 	return _running
+
+
+## Mean damage multiplier the live population applies to each weapon (>1 means
+## that weapon is still effective, <1 means the swarm is tanking it).
+func resistance_profile() -> Dictionary:
+	var profile := {"sonic": 0.0, "bubble": 0.0, "thermal": 0.0}
+	if population.is_empty():
+		return profile
+	for g in population:
+		for w: String in ["sonic", "bubble", "thermal"]:
+			profile[w] += g.damage_multiplier_for(w)
+	for w: String in profile.keys():
+		profile[w] = snappedf(float(profile[w]) / float(population.size()), 0.001)
+	return profile
+
+
+## Additive: mean evolved traits of the live population (same maths the GA logs).
+func mean_traits() -> Dictionary:
+	if population.is_empty():
+		return {}
+	return GeneticAlgorithm.mean_traits(population)
+
+
+## Additive: how the current population's resistance to each weapon compares
+## with the previous generation. Negative = the swarm got better against it.
+func generation_delta() -> Dictionary:
+	return _profile_delta.duplicate()
+
+
+## Additive: mean traits before and after the last evolution step, for the
+## between-wave "the swarm is adapting" panel ({before, after} dictionaries).
+func last_generation_traits() -> Dictionary:
+	return {"before": _prev_mean_traits.duplicate(), "after": _mean_traits.duplicate()}
+
+
+## Additive: which species are currently in the population, with counts.
+func species_roster() -> Dictionary:
+	var roster := {}
+	for g in population:
+		roster[g.species_id] = int(roster.get(g.species_id, 0)) + 1
+	return roster
+
+
+## Additive: per-zone spawn tallies ({zone_id: {species_id: count}}), used by the
+## spawn audit and the bestiary's "where it shows up" hints.
+func spawn_zone_report() -> Dictionary:
+	return _spawn_zone_report.duplicate(true)
+
+
+func total_spawned() -> int:
+	return _spawned_total
+
+
+## Additive: the zone a species favours on this island (its "home" here).
+func home_zone_for(species_id: String) -> String:
+	return SpeciesDB.resolve_home_zone(species_id, reef_id, _zone_ids)
+
+
+func zone_label(zone_id: String) -> String:
+	return SpeciesDB.zone_label(zone_id)
 
 
 # ============================================================ WAVE LOOP
@@ -146,9 +249,64 @@ func _spawn_enemy(genome: InvasiveGenome) -> void:
 	if host == null:
 		host = get_tree().current_scene
 	host.add_child(enemy)
-	enemy.global_position = _spawn_position()
+	enemy.global_position = _spawn_position_for(genome.species_id)
 	if _touch_damage > 0.0 and "touch_damage" in enemy:
 		enemy.set("touch_damage", _touch_damage)
+	_spawned_total += 1
+
+
+# ============================================================ ZONE SPAWNING
+# W7: every species has a home zone per island, but never exclusively — each
+# species' cycle always contains every zone of the level. SpeciesDB.zone_cycle()
+# builds the deterministic pattern (home = HOME_SLOTS, others = FLOOR_SLOTS).
+
+func _zone_cycle_for(species_id: String) -> Array[String]:
+	if _zone_ids.is_empty():
+		var empty: Array[String] = []
+		return empty
+	if not _zone_cycles.has(species_id):
+		_zone_cycles[species_id] = SpeciesDB.zone_cycle(species_id, reef_id, _zone_ids)
+	return _zone_cycles[species_id]
+
+
+func _next_zone_for(species_id: String) -> String:
+	var cycle := _zone_cycle_for(species_id)
+	if cycle.is_empty():
+		return ""
+	var key := "%s|cycle" % species_id
+	var cursor := int(_zone_cursors.get(key, 0))
+	_zone_cursors[key] = cursor + 1
+	return cycle[cursor % cycle.size()]
+
+
+func _point_in_zone(zone_id: String) -> Vector2:
+	if _floor != null and _floor.has_method("zone_spawn_point"):
+		var point: Variant = _floor.call("zone_spawn_point", zone_id, SPAWN_JITTER)
+		if point is Vector2:
+			return _clamp_to_arena(point)
+	for z: Dictionary in _spawn_zones:
+		if String(z["id"]) != zone_id:
+			continue
+		var pool: Array = z.get("points", [])
+		if pool.is_empty():
+			break
+		var key := "%s|point" % zone_id
+		var cursor := int(_zone_cursors.get(key, 0)) % pool.size()
+		_zone_cursors[key] = cursor + 1
+		return _clamp_to_arena(pool[cursor] + Vector2(
+			randf_range(-SPAWN_JITTER, SPAWN_JITTER), randf_range(-SPAWN_JITTER, SPAWN_JITTER)))
+	return _spawn_position()
+
+
+## Wave spawn position: zone first (weighted by species), point second.
+func _spawn_position_for(species_id: String) -> Vector2:
+	var zone_id := _next_zone_for(species_id)
+	if zone_id == "":
+		return _spawn_position()
+	var entry: Dictionary = _spawn_zone_report.get(zone_id, {})
+	entry[species_id] = int(entry.get(species_id, 0)) + 1
+	_spawn_zone_report[zone_id] = entry
+	return _point_in_zone(zone_id)
 
 
 ## B's original spawn was player position + a random angle * spawn_radius (520).
@@ -160,13 +318,27 @@ func _spawn_position() -> Vector2:
 	if not _spawn_points.is_empty():
 		var point: Vector2 = _spawn_points[_point_cursor % _spawn_points.size()]
 		_point_cursor += 1
-		return _clamp_to_arena(point + Vector2(
-			randf_range(-SPAWN_JITTER, SPAWN_JITTER), randf_range(-SPAWN_JITTER, SPAWN_JITTER)))
+		return _safe_jitter(point)
 	var origin := Vector2.ZERO
 	var player := get_tree().get_first_node_in_group("player") as Node2D
 	if player != null:
 		origin = player.global_position
 	return _clamp_to_arena(origin + Vector2.from_angle(randf() * TAU) * spawn_radius)
+
+
+## Jitter must never break the spawn guarantees: a jittered point is only kept
+## when it is still inside the floor, clear of obstacles and >= 340 px from the
+## arena centre (the band the audit checks). Otherwise the clean point is used.
+func _safe_jitter(base: Vector2) -> Vector2:
+	var jittered := _clamp_to_arena(base + Vector2(
+		randf_range(-SPAWN_JITTER, SPAWN_JITTER), randf_range(-SPAWN_JITTER, SPAWN_JITTER)))
+	if _floor != null and is_instance_valid(_floor) and _floor.has_method("is_spawn_clear"):
+		if bool(_floor.call("is_spawn_clear", jittered)):
+			return jittered
+		return _clamp_to_arena(base)
+	if jittered.distance_to(_arena * 0.5) >= SPAWN_MIN_CENTRE_DIST:
+		return jittered
+	return _clamp_to_arena(base)
 
 
 func _clamp_to_arena(p: Vector2) -> Vector2:
@@ -191,8 +363,15 @@ func _finish_wave() -> void:
 		return
 
 	var usage := Telemetry.get_usage_fractions(true)
+	_prev_mean_traits = GeneticAlgorithm.mean_traits(population)
 	population = GeneticAlgorithm.evolve(population, usage, _enemy_count_for(wave_number + 1))
-	var traits := GeneticAlgorithm.mean_traits(population)
+	_mean_traits = GeneticAlgorithm.mean_traits(population)
+	var profile := resistance_profile()
+	_profile_delta.clear()
+	for w in profile:
+		_profile_delta[w] = snappedf(profile[w] - float(_prev_profile.get(w, profile[w])), 0.001)
+	_prev_profile = profile
+	var traits := _mean_traits
 	Telemetry.log_generation(wave_number, traits)
 	if debug_log:
 		print("[WaveManager] wave %d usage=%s -> next mean traits=%s" % [wave_number, usage, traits])
@@ -208,24 +387,26 @@ func _enemy_count_for(wave: int) -> int:
 
 # ============================================================ FOUNDING GENOMES
 
-## GeneticAlgorithm.seed_population() rolls every resistance in 0.0-0.1, which
-## would throw away the per-island starting genomes each level scene exports
-## (level difficulty design: redwake ~0.05, quiet_belt ~0.18, harrow ~0.3). Use
-## the level's template when one was configured, jittered for founding variation,
-## and fall back to the GA's own seeding when WaveManager runs standalone.
+# // PROPOSED CHANGE: founding genomes are seeded from SpeciesDB's per-species
+# // baselines blended with the island difficulty template, so an island is still
+# // as hard as its .tscn says while each invasive keeps its species identity and
+# // signature trait. Fallback to the GA's own roll when no template was set.
 func _seed_population(size: int) -> Array[InvasiveGenome]:
-	if _genome_template == null:
-		return GeneticAlgorithm.seed_population(size)
 	var pop: Array[InvasiveGenome] = []
+	var available := SpeciesDB.get_species_for_island(reef_id)
+	if available.is_empty():
+		return GeneticAlgorithm.seed_population(size)
 	for i in size:
-		var g := InvasiveGenome.new()
-		g.acoustic_armor = _jitter_resistance(_genome_template.acoustic_armor)
-		g.spiky_shell = _jitter_resistance(_genome_template.spiky_shell)
-		g.heat_sink = _jitter_resistance(_genome_template.heat_sink)
-		g.speed_multiplier = _genome_template.speed_multiplier * (
-			1.0 + randf_range(-TEMPLATE_SPEED_JITTER, TEMPLATE_SPEED_JITTER))
-		g.max_health = _genome_template.max_health * (
-			1.0 + randf_range(-TEMPLATE_HEALTH_JITTER, TEMPLATE_HEALTH_JITTER))
+		# Round-robin so every island roster is represented in every wave, with
+		# a gentle drift towards the hardier species as the waves progress.
+		var offset := (maxi(wave_number, 1) - 1) * 2
+		var species_id: String = available[(i + offset) % available.size()]
+		var g := SpeciesDB.create_island_genome(species_id, _genome_template)
+		g.acoustic_armor = _jitter_resistance(g.acoustic_armor)
+		g.spiky_shell = _jitter_resistance(g.spiky_shell)
+		g.heat_sink = _jitter_resistance(g.heat_sink)
+		g.speed_multiplier *= 1.0 + randf_range(-TEMPLATE_SPEED_JITTER, TEMPLATE_SPEED_JITTER)
+		g.max_health *= 1.0 + randf_range(-TEMPLATE_HEALTH_JITTER, TEMPLATE_HEALTH_JITTER)
 		g.clamp_traits()
 		pop.append(g)
 	return pop

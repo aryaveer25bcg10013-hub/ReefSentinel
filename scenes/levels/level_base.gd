@@ -28,9 +28,26 @@ const PLACEHOLDER_ENEMY_SCRIPT := "res://scenes/levels/placeholders/reef_placeho
 const PLACEHOLDER_WAVES_SCRIPT := "res://scenes/levels/placeholders/reef_placeholder_waves.gd"
 const HUD_SCRIPT := "res://scenes/ui/level_hud.gd"
 const WORLD_MAP_SCENE := "res://scenes/ui/world_map.tscn"
+const SpeciesDB := preload("res://systems/species_db.gd")
 
 const ARENA_SIZE := Vector2(1600, 900)
 const WALL_THICKNESS := 40.0
+
+# W3: which weapon counter-trait each resistance trait feeds, for the
+# between-wave adaptation panel. Display strings only — the maths stays in
+# systems/genome.gd::damage_multiplier_for().
+const TRAIT_LABELS := {
+	"acoustic_armor": "Acoustic Armor",
+	"spiky_shell": "Spiky Shell",
+	"heat_sink": "Heat Sink",
+	"max_health": "Body Mass",
+	"speed_multiplier": "Swim Speed",
+}
+const TRAIT_WEAPON := {
+	"acoustic_armor": "thermal",
+	"spiky_shell": "sonic",
+	"heat_sink": "bubble",
+}
 
 # ================================================================ LEVEL DATA
 # Set per-level in each .tscn. This is level design, not genome logic: the
@@ -61,13 +78,44 @@ var _hud: CanvasLayer
 var _completed := false
 
 
+var _seen_species: Array[String] = []
+
+
 func _ready() -> void:
 	_seed = level_seed if level_seed != 0 else absi(hash(island_id))
 	_build_floor()
 	_build_walls()
+	_build_obstacles()
 	_build_player()
 	_build_waves()
 	_build_hud()
+
+
+## W4: solid level geometry. Every shape the floor reports becomes real
+## collision for the player AND the enemies (they both use move_and_slide),
+## so they path around cover instead of through it.
+func _build_obstacles() -> void:
+	if _floor == null or not _floor.has_method("obstacles"):
+		return
+	var list: Array = _floor.call("obstacles")
+	if list.is_empty():
+		return
+	var body := StaticBody2D.new()
+	body.name = "ReefObstacles"
+	add_child(body)
+	for o: Dictionary in list:
+		var shape := CollisionShape2D.new()
+		var pos: Vector2 = o["pos"]
+		if o.has("size"):
+			var box := RectangleShape2D.new()
+			box.size = o["size"]
+			shape.shape = box
+		else:
+			var circle := CircleShape2D.new()
+			circle.radius = float(o["r"])
+			shape.shape = circle
+		shape.position = pos
+		body.add_child(shape)
 
 
 # ================================================================ WORLD
@@ -77,8 +125,12 @@ func _build_floor() -> void:
 	floor_node.name = "ReefFloor"
 	if not _apply_script(floor_node, FLOOR_SCRIPT):
 		return
-	add_child(floor_node)
+	# BUG FIX: configure() must run BEFORE the node enters the tree. add_child()
+	# fires the floor's _ready() synchronously, which builds the geometry, props,
+	# obstacles and zones — so configuring afterwards left every island building
+	# the SHALLOW_REEF default (levels 2 and 3 looked like level 1).
 	floor_node.call("configure", biome, _arena, _seed)
+	add_child(floor_node)
 	_floor = floor_node
 
 
@@ -115,11 +167,13 @@ func _build_player() -> void:
 		var scene := load(PLAYER_SCENE) as PackedScene
 		if scene != null:
 			node = scene.instantiate() as Node2D
-	if node == null:
+	if node == null and ResourceLoader.exists(PLACEHOLDER_PLAYER_SCRIPT):
 		var body := CharacterBody2D.new()
-		if not _apply_script(body, PLACEHOLDER_PLAYER_SCRIPT):
-			return
-		node = body
+		if _apply_script(body, PLACEHOLDER_PLAYER_SCRIPT):
+			node = body
+	if node == null:
+		push_error("Level %s: no player scene available" % island_id)
+		return
 	node.name = "Submarine"
 	add_child(node)
 	node.global_position = _arena * 0.5
@@ -173,6 +227,11 @@ func _build_waves() -> void:
 	if director.has_method("configure"):
 		director.call("configure", island_id, wave_count, enemies_first_wave,
 				enemies_per_wave_step, _enemy_scene(), genome, points, _arena, enemy_touch_damage)
+	# W7: named zones so each species arrives mostly from its home ground.
+	if director.has_method("set_spawn_zones") and _floor != null and _floor.has_method("spawn_zones"):
+		director.call("set_spawn_zones", _floor.call("spawn_zones"))
+	if director.has_method("set_floor_source"):
+		director.call("set_floor_source", _floor)
 	if director.has_method("start"):
 		director.call("start")
 
@@ -186,11 +245,12 @@ func _make_wave_director() -> Node:
 			if node != null:
 				node.name = "WaveManager"
 				return node
-	var fallback := Node.new()
-	if not _apply_script(fallback, PLACEHOLDER_WAVES_SCRIPT):
-		return null
-	fallback.name = "WaveDirectorPlaceholder"
-	return fallback
+	if ResourceLoader.exists(PLACEHOLDER_WAVES_SCRIPT):
+		var fallback := Node.new()
+		if _apply_script(fallback, PLACEHOLDER_WAVES_SCRIPT):
+			fallback.name = "WaveDirectorPlaceholder"
+			return fallback
+	return null
 
 
 func _enemy_scene() -> PackedScene:
@@ -202,6 +262,8 @@ func _enemy_scene() -> PackedScene:
 
 
 func _placeholder_enemy_scene() -> PackedScene:
+	if not ResourceLoader.exists(PLACEHOLDER_ENEMY_SCRIPT):
+		return null
 	var script := load(PLACEHOLDER_ENEMY_SCRIPT)
 	if not (script is Script):
 		return null
@@ -279,10 +341,89 @@ func _on_player_died() -> void:
 func _on_wave_started(wave_number: int) -> void:
 	if _hud != null and _hud.has_method("set_wave"):
 		_hud.call("set_wave", wave_number, wave_count)
+	_announce_new_species()
 
 
+## W3/W6: the first time an island puts a species in the water, tell the player
+## and record it for the bestiary.
+func _announce_new_species() -> void:
+	if _director == null or not _director.has_method("species_roster"):
+		return
+	var roster: Dictionary = _director.call("species_roster")
+	for sid: String in roster.keys():
+		if _seen_species.has(sid):
+			continue
+		_seen_species.append(sid)
+		GameProgress.mark_species_seen(sid)
+		var data := SpeciesDB.get_species(sid)
+		var weak: Array = data.get("weak_to", [])
+		var hint := ""
+		if not weak.is_empty():
+			hint = "Weak to %s." % String(weak[0]).to_upper()
+		if _hud != null and _hud.has_method("show_species_card"):
+			_hud.call("show_species_card", String(data.get("name", sid)), hint,
+					data.get("tint", Color.WHITE), threat_of(sid))
+
+
+func threat_of(species_id: String) -> int:
+	return int(SpeciesDB.get_species(species_id).get("threat", 1))
+
+
+## W3: between waves, show what the swarm just evolved and what it means for the
+## weapon the player is holding. All numbers come from the wave manager.
 func _on_wave_completed(_wave_number: int) -> void:
-	pass
+	if _hud == null or _director == null or not _hud.has_method("show_adaptation"):
+		return
+	var lines: Array[String] = []
+	if _director.has_method("last_generation_traits"):
+		var gens: Dictionary = _director.call("last_generation_traits")
+		var before: Dictionary = gens.get("before", {})
+		var after: Dictionary = gens.get("after", {})
+		var moved: Array[Dictionary] = []
+		for key: String in TRAIT_LABELS.keys():
+			if not before.has(key) or not after.has(key):
+				continue
+			var d := float(after[key]) - float(before[key])
+			if absf(d) < 0.004:
+				continue
+			moved.append({"key": key, "d": d})
+		moved.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			return absf(a["d"]) > absf(b["d"]))
+		for i in mini(3, moved.size()):
+			var key: String = moved[i]["key"]
+			var arrow := "▲" if moved[i]["d"] > 0.0 else "▼"
+			var meaning := ""
+			if TRAIT_WEAPON.has(key):
+				meaning = " — %s is losing ground" % String(TRAIT_WEAPON[key]).to_upper()
+			elif key == "max_health":
+				meaning = " — they are getting tankier"
+			elif key == "speed_multiplier":
+				meaning = " — they are getting faster"
+			lines.append("%s %s %.2f → %.2f%s" % [String(TRAIT_LABELS[key]), arrow,
+					float(before[key]), float(after[key]), meaning])
+	if _director.has_method("generation_delta"):
+		var deltas: Dictionary = _director.call("generation_delta")
+		var weapon := _current_weapon_id()
+		if deltas.has(weapon):
+			var d := float(deltas[weapon])
+			if absf(d) >= 0.005:
+				var pct := absf(d) * 100.0
+				if d < 0.0:
+					lines.append("Your %s does %.0f%% less damage to this swarm." % [weapon.to_upper(), pct])
+				else:
+					lines.append("Your %s does %.0f%% more damage to this swarm." % [weapon.to_upper(), pct])
+	if lines.is_empty():
+		lines.append("The swarm held its ground this generation.")
+	_hud.call("show_adaptation", lines)
+
+
+func _current_weapon_id() -> String:
+	if _player == null:
+		return "sonic"
+	var weapon: Variant = _player.get("current_weapon_id")
+	if weapon == null:
+		return "sonic"
+	return String(weapon)
 
 
 func _on_reef_cleared(reef_id: String) -> void:
@@ -337,10 +478,21 @@ func _process(_delta: float) -> void:
 		elif not _completed:
 			left = get_tree().get_nodes_in_group("invasive").size()
 		_hud.call("set_enemies_left", left)
-	if _hud.has_method("set_weapon") and _player != null:
-		var weapon: Variant = _player.get("current_weapon_id")
-		if weapon != null:
-			_hud.call("set_weapon", String(weapon))
+	var weapon := _current_weapon_id()
+	if _hud.has_method("set_weapon"):
+		_hud.call("set_weapon", weapon)
+	# W3: live "is my weapon still working?" readout for the equipped weapon.
+	if _hud.has_method("set_effectiveness") and _director != null and _director.has_method("resistance_profile"):
+		var profile: Dictionary = _director.call("resistance_profile")
+		if profile.has(weapon) and float(profile[weapon]) > 0.0:
+			var delta := 0.0
+			if _director.has_method("generation_delta"):
+				var deltas: Dictionary = _director.call("generation_delta")
+				if deltas.has(weapon):
+					delta = float(deltas[weapon])
+			_hud.call("set_effectiveness", weapon, float(profile[weapon]), delta)
+	if _hud.has_method("set_weapon_status") and _player != null and _player.has_method("weapon_status"):
+		_hud.call("set_weapon_status", _player.call("weapon_status"))
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -351,6 +503,8 @@ func _unhandled_input(event: InputEvent) -> void:
 # ================================================================ HELPERS
 
 func _apply_script(node: Object, path: String) -> bool:
+	if not ResourceLoader.exists(path):
+		return false
 	var script := load(path)
 	if not (script is Script):
 		push_warning("Missing script: %s" % path)

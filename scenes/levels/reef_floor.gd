@@ -50,12 +50,123 @@ const ASH := Color("4a4038")
 const CAUSTIC := Color(1, 1, 1, 0.05)
 const SHADOW := Color(0.02, 0.10, 0.08, 0.22)
 
+# Far-field backdrop per biome: the shelf band behind the dive site and the
+# colour the distant reef silhouettes are painted in.
+const COLOR_SHELF_FAR := [
+	Color("1d5f86"),  # SHALLOW_REEF
+	Color("17492f"),  # KELP_BELT
+	Color("3a2029"),  # VOLCANIC_VENTS
+]
+const COLOR_SILHOUETTE := [
+	Color("b6d6d2"),
+	Color("7fb877"),
+	Color("8a4030"),
+]
+
+# ================================================================ ZONES
+# Named regions of the dive site. Waves pick a zone per spawn, and species have
+# a home zone per island, so different species arrive from different directions.
+# Rules that keep this honest:
+#   * every zone is a disc inside the arena,
+#   * points inside a zone must still satisfy the floor/centre/obstacle rules,
+#   * species are only *weighted* towards their home, never restricted to it.
+
+const ZONES := {
+	Biome.SHALLOW_REEF: [
+		{"id": "open_water", "centre": Vector2(800, 450), "radius": 640.0},
+		{"id": "coral_shelf", "centre": Vector2(400, 280), "radius": 250.0},
+		{"id": "sand_bar", "centre": Vector2(1210, 630), "radius": 250.0},
+		{"id": "channel", "centre": Vector2(1240, 250), "radius": 240.0},
+	],
+	Biome.KELP_BELT: [
+		{"id": "open_water", "centre": Vector2(800, 450), "radius": 640.0},
+		{"id": "wreck_shallows", "centre": Vector2(1180, 300), "radius": 240.0},
+		{"id": "kelp_trench", "centre": Vector2(400, 650), "radius": 250.0},
+		{"id": "channel", "centre": Vector2(1250, 640), "radius": 240.0},
+	],
+	Biome.VOLCANIC_VENTS: [
+		{"id": "open_water", "centre": Vector2(800, 450), "radius": 640.0},
+		{"id": "vent_field", "centre": Vector2(400, 280), "radius": 250.0},
+		{"id": "bone_flats", "centre": Vector2(1210, 270), "radius": 250.0},
+		{"id": "ridge_ruins", "centre": Vector2(400, 660), "radius": 250.0},
+		{"id": "ash_drift", "centre": Vector2(1210, 660), "radius": 250.0},
+	],
+}
+
+# ================================================================ OBSTACLES
+# Real level design: solid shapes the player AND the enemies collide with.
+# All convex on purpose — a concave pocket narrower than the enemy body is the
+# soft-lock bug class this project already paid for once.
+
+const OBSTACLES := {
+	Biome.SHALLOW_REEF: [
+		{"kind": "bombie", "pos": Vector2(320, 240), "r": 66.0},
+		{"kind": "bombie", "pos": Vector2(1280, 240), "r": 66.0},
+		{"kind": "bombie", "pos": Vector2(320, 660), "r": 60.0},
+		{"kind": "arch", "pos": Vector2(1260, 660), "size": Vector2(150, 92)},
+		{"kind": "sandbar", "pos": Vector2(590, 470), "size": Vector2(230, 56)},
+		{"kind": "rock", "pos": Vector2(1010, 610), "r": 58.0},
+		{"kind": "bombie", "pos": Vector2(1060, 300), "r": 54.0},
+	],
+	Biome.KELP_BELT: [
+		{"kind": "wreck", "pos": Vector2(1180, 300), "size": Vector2(230, 104)},
+		{"kind": "wreck", "pos": Vector2(300, 430), "size": Vector2(190, 74)},
+		{"kind": "rock", "pos": Vector2(700, 230), "r": 62.0},
+		{"kind": "rock", "pos": Vector2(900, 680), "r": 62.0},
+		{"kind": "rock", "pos": Vector2(660, 470), "r": 58.0},
+		{"kind": "wreck", "pos": Vector2(1310, 470), "size": Vector2(110, 80)},
+	],
+	Biome.VOLCANIC_VENTS: [
+		{"kind": "ridge", "pos": Vector2(620, 470), "size": Vector2(200, 52)},
+		{"kind": "ridge", "pos": Vector2(1000, 470), "size": Vector2(200, 52)},
+		{"kind": "rock", "pos": Vector2(300, 240), "r": 60.0},
+		{"kind": "rock", "pos": Vector2(1300, 240), "r": 60.0},
+		{"kind": "rock", "pos": Vector2(300, 660), "r": 60.0},
+		{"kind": "rock", "pos": Vector2(1300, 660), "r": 60.0},
+		{"kind": "ridge", "pos": Vector2(800, 190), "size": Vector2(150, 48)},
+	]}
+
+# Kelp slows and hides (non-solid); geysers erupt on a timed cycle and hurt the
+# sentinel — the invasives are natives here and ignore them.
+const SLOW_FIELDS := {
+	Biome.SHALLOW_REEF: [],
+	Biome.KELP_BELT: [
+		{"pos": Vector2(400, 660), "r": 250.0, "factor": 0.62},
+		{"pos": Vector2(860, 470), "r": 200.0, "factor": 0.74},
+	],
+	Biome.VOLCANIC_VENTS: [],
+}
+const HAZARDS := {
+	Biome.SHALLOW_REEF: [],
+	Biome.KELP_BELT: [],
+	Biome.VOLCANIC_VENTS: [
+		{"kind": "geyser", "pos": Vector2(800, 240), "r": 74.0},
+		{"kind": "geyser", "pos": Vector2(800, 690), "r": 74.0},
+	],
+}
+
+const SPAWN_MIN_CENTRE_DIST := 340.0
+const SPAWN_CLEARANCE := 34.0   # enemy body radius 14 + margin
+const ZONE_POOL_SIZE := 26
+const GEYSER_PERIOD := 4.2
+const GEYSER_WARN := 1.1
+
 # ================================================================ STATE
 
 var _biome := Biome.SHALLOW_REEF
 var _arena := Vector2(1600, 900)
 var _seed := 4242
 var _noise := FastNoiseLite.new()
+
+var _obstacles: Array[Dictionary] = []
+var _zone_defs: Array[Dictionary] = []
+var _zone_pools: Dictionary = {}      # zone id -> Array[Vector2]
+var _zone_cursors: Dictionary = {}    # zone id -> int
+var _slow_fields: Array[Dictionary] = []
+var _hazards: Array[Dictionary] = []
+var _shoals: Array[Dictionary] = []
+var _motes: Array[Vector3] = []       # x, y, phase (drifting particulate)
+var _hurt_cooldown := 0.0
 
 var _bake: SubViewport
 var _art: Node2D
@@ -83,9 +194,12 @@ func _ready() -> void:
 	_noise.frequency = 0.035
 	_noise.fractal_octaves = 3
 
+	add_to_group("reef_floor")
 	_build_geometry()
 	_build_props()
+	_build_obstacles()
 	_build_particles()
+	_build_zone_data()
 	_bake_floor()
 
 	_fx = Node2D.new()
@@ -97,8 +211,200 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_time += delta
+	_hurt_cooldown = maxf(0.0, _hurt_cooldown - delta)
+	_erupt_hazards()
 	if _fx:
 		_fx.queue_redraw()
+
+
+# ================================================================ OBSTACLES / HAZARDS
+
+func _build_obstacles() -> void:
+	_obstacles.clear()
+	var defs: Array = OBSTACLES.get(_biome, [])
+	for d: Dictionary in defs:
+		var entry := d.duplicate()
+		if not entry.has("r"):
+			entry["r"] = maxf((entry["size"] as Vector2).x, (entry["size"] as Vector2).y) * 0.5
+		_obstacles.append(entry)
+	_slow_fields.clear()
+	for s: Dictionary in SLOW_FIELDS.get(_biome, []):
+		_slow_fields.append(s.duplicate())
+	_hazards.clear()
+	for h: Dictionary in HAZARDS.get(_biome, []):
+		var entry := h.duplicate()
+		entry["phase"] = randf() * GEYSER_PERIOD
+		_hazards.append(entry)
+	# Background shoals that scatter when the sentinel swims through them.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _seed + 313
+	for _i in range(4):
+		var c := _pick(rng, Rect2(Vector2(300, 220), _arena - Vector2(600, 440)))
+		_shoals.append({"centre": c, "phase": rng.randf() * TAU,
+				"tint": rng.randf(), "flee": Vector2.ZERO})
+
+
+## Solid shapes the level turns into StaticBody2D collision. Convex circles and
+## rectangles only.
+func obstacles() -> Array[Dictionary]:
+	return _obstacles.duplicate()
+
+
+func hazard_list() -> Array[Dictionary]:
+	return _hazards.duplicate()
+
+
+## Speed multiplier for a point (kelp hides and slows). 1.0 = unaffected.
+func slow_factor_at(p: Vector2) -> float:
+	var factor := 1.0
+	for s: Dictionary in _slow_fields:
+		if p.distance_to(s["pos"]) <= s["r"]:
+			factor = minf(factor, float(s["factor"]))
+	return factor
+
+
+func _erupt_hazards() -> void:
+	if _hazards.is_empty():
+		return
+	if _hurt_cooldown > 0.0:
+		return
+	var player := get_tree().get_first_node_in_group("player") as Node2D
+	if player == null:
+		return
+	for h: Dictionary in _hazards:
+		var t := fmod(_time + float(h["phase"]), GEYSER_PERIOD)
+		if t > GEYSER_WARN * 0.5:
+			continue
+		if player.global_position.distance_to(h["pos"]) <= float(h["r"]):
+			_hurt_cooldown = 1.0
+			if player.has_method("take_health_damage"):
+				player.take_health_damage(8.0)
+			return
+
+
+## Is this a legal place to drop an enemy? Inside the sand, clear of the arena
+## centre (so nothing lands on the player) and clear of every solid.
+func is_spawn_clear(p: Vector2, require_centre_distance: bool = true) -> bool:
+	var safe := _grow(_floor, -60.0)
+	if safe.size() < 3 or not Geometry2D.is_point_in_polygon(p, safe):
+		return false
+	if require_centre_distance and p.distance_to(_arena * 0.5) < SPAWN_MIN_CENTRE_DIST:
+		return false
+	for o: Dictionary in _obstacles:
+		var pos: Vector2 = o["pos"]
+		if o.has("size"):
+			var half: Vector2 = (o["size"] as Vector2) * 0.5 + Vector2.ONE * SPAWN_CLEARANCE
+			if absf(p.x - pos.x) <= half.x and absf(p.y - pos.y) <= half.y:
+				return false
+		elif p.distance_to(pos) <= float(o["r"]) + SPAWN_CLEARANCE:
+			return false
+	return true
+
+
+# ================================================================ ZONES
+
+func zone_ids() -> Array[String]:
+	var out: Array[String] = []
+	for z: Dictionary in _zone_defs:
+		out.append(String(z["id"]))
+	return out
+
+
+func _build_zone_data() -> void:
+	_zone_defs = []
+	_zone_pools = {}
+	_zone_cursors = {}
+	var defs: Array = ZONES.get(_biome, ZONES[Biome.SHALLOW_REEF])
+	var zone_rng := RandomNumberGenerator.new()
+	zone_rng.seed = _seed + 909
+	for d: Dictionary in defs:
+		var zone := d.duplicate()
+		_zone_defs.append(zone)
+		var pool: Array[Vector2] = []
+		var centre: Vector2 = zone["centre"]
+		var radius: float = zone["radius"]
+		var tries := 0
+		while pool.size() < ZONE_POOL_SIZE and tries < ZONE_POOL_SIZE * 120:
+			tries += 1
+			var a := zone_rng.randf() * TAU
+			var rr := sqrt(zone_rng.randf()) * radius
+			var p := centre + Vector2(cos(a), sin(a)) * rr
+			var inside := Rect2(Vector2(RIM, RIM), _arena - Vector2(RIM, RIM) * 2.0)
+			if not inside.has_point(p):
+				continue
+			if not is_spawn_clear(p):
+				continue
+			var clear := true
+			for q in pool:
+				if q.distance_to(p) < 100.0:
+					clear = false
+					break
+			if clear:
+				pool.append(p)
+		_zone_pools[String(zone["id"])] = pool
+		_zone_cursors[String(zone["id"])] = 0
+
+
+## Zone descriptors for the wave manager: id, label, centre, radius and a
+## pre-validated pool of spawn points inside the zone.
+## Every declared zone is reported, even one whose pool came up empty: the wave
+## manager and the audit must agree on the zone list, otherwise a species' home
+## zone would silently fall back to another region.
+func spawn_zones() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for zone: Dictionary in _zone_defs:
+		var id := String(zone["id"])
+		var pool: Array = _zone_pools.get(id, [])
+		out.append({
+			"id": id,
+			"label": _zone_label(id),
+			"centre": zone["centre"],
+			"radius": zone["radius"],
+			"points": pool,
+		})
+	return out
+
+
+func zone_spawn_point(zone_id: String, jitter: float = 0.0) -> Vector2:
+	var pool: Array = _zone_pools.get(zone_id, [])
+	if pool.is_empty():
+		return _fallback_spawn_point()
+	var cursor := int(_zone_cursors.get(zone_id, 0))
+	for attempt in range(pool.size()):
+		var idx := (cursor + attempt) % pool.size()
+		var base: Vector2 = pool[idx]
+		var p := base
+		if jitter > 0.0:
+			p += Vector2(randf_range(-jitter, jitter), randf_range(-jitter, jitter))
+		if is_spawn_clear(p):
+			_zone_cursors[zone_id] = (idx + 1) % pool.size()
+			return p
+	# Nothing nearby was clear; take the raw point rather than skipping the spawn.
+	_zone_cursors[zone_id] = (cursor + 1) % pool.size()
+	return pool[cursor % pool.size()]
+
+
+func _zone_label(zone_id: String) -> String:
+	const SpeciesDB := preload("res://systems/species_db.gd")
+	return SpeciesDB.zone_label(zone_id)
+
+
+## Last-resort legal spawn point, used when a zone's pool could not be filled.
+## Never returns a point inside a wall or on top of the player.
+func _fallback_spawn_point() -> Vector2:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _seed + _time_frames()
+	for _i in range(200):
+		var a := rng.randf() * TAU
+		var rr := rng.randf_range(SPAWN_MIN_CENTRE_DIST, 520.0)
+		var p := _arena * 0.5 + Vector2(cos(a), sin(a)) * rr
+		if is_spawn_clear(p):
+			return p
+	return _arena * 0.5 + Vector2(0.0, -SPAWN_MIN_CENTRE_DIST)
+
+
+func _time_frames() -> int:
+	return int(Time.get_ticks_msec() % 997)
 
 
 # ================================================================ GEOMETRY
@@ -238,6 +544,9 @@ func _build_particles() -> void:
 	for _i in range(6):
 		var p := _pick(rng, inner)
 		_lights.append(Vector3(p.x, p.y, rng.randf() * TAU))
+	for _i in range(90):
+		var p := _pick(rng, inner)
+		_motes.append(Vector3(p.x, p.y, rng.randf() * TAU))
 
 
 # ================================================================ BAKE
@@ -276,6 +585,7 @@ func _draw_floor() -> void:
 	var ci := _art
 	# open water, then the lighter shelf ring around the dive site
 	ci.draw_rect(Rect2(-200, -200, _arena.x + 400, _arena.y + 400), DEEP)
+	_draw_backdrop(ci)
 	ci.draw_colored_polygon(_rim, WATER)
 	_fill(ci, _grow(_rim, -18.0), SHELF)
 	_fill(ci, _grow(_rim, -46.0), SHELF_LIGHT)
@@ -293,6 +603,195 @@ func _draw_floor() -> void:
 	_draw_floor_detail(ci)
 	for prop: Dictionary in _props:
 		_draw_prop(ci, prop)
+	_draw_slow_fields(ci)
+	_draw_obstacles(ci)
+	_draw_hazard_rings(ci)
+
+
+## Layered background inside the dive site: shallower shelves, coral silhouettes
+## fading into the murk, light shafts and a caustic wash. All baked once.
+func _draw_backdrop(ci: CanvasItem) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _seed + 71
+	# far shelf band
+	_fill(ci, _grow(_rim, 78.0), COLOR_SHELF_FAR[_biome])
+	# distant reef silhouettes around the rim
+	for _i in range(46):
+		var a := rng.randf_range(PI, TAU)
+		var base := _arena * 0.5 + Vector2(cos(a), sin(a)) * rng.randf_range(560.0, 900.0)
+		var h := rng.randf_range(40.0, 120.0)
+		var w := rng.randf_range(30.0, 90.0)
+		var col: Color = COLOR_SILHOUETTE[_biome]
+		col.a = rng.randf_range(0.10, 0.26)
+		var pts := PackedVector2Array([
+			base + Vector2(-w, h * 0.5), base + Vector2(-w * 0.4, -h * 0.5),
+			base + Vector2(w * 0.15, -h * 0.32), base + Vector2(w, h * 0.5)])
+		ci.draw_colored_polygon(pts, col)
+		ci.draw_polyline(_closed(pts), Color(col, col.a * 1.6), 1.5, true)
+	# light shafts
+	for _i in range(7):
+		var x := rng.randf_range(120.0, _arena.x - 120.0)
+		var w := rng.randf_range(46.0, 130.0)
+		var lean := rng.randf_range(-70.0, 70.0)
+		var shaft := PackedVector2Array([Vector2(x - w * 0.5, -40.0), Vector2(x + w * 0.5, -40.0),
+				Vector2(x + w * 0.5 + lean, _arena.y + 40.0), Vector2(x - w * 0.5 + lean, _arena.y + 40.0)])
+		ci.draw_colored_polygon(shaft, Color(1, 1, 1, rng.randf_range(0.025, 0.055)))
+	# caustic wash
+	for _i in range(90):
+		var p := _pick(rng, Rect2(Vector2(60, 60), _arena - Vector2(120, 120)))
+		var rad := rng.randf_range(18.0, 54.0)
+		var ring := PackedVector2Array()
+		var n := 12
+		for k in range(n):
+			var ang := TAU * float(k) / float(n)
+			ring.append(p + Vector2(cos(ang) * rad, sin(ang) * rad * 0.7))
+		ci.draw_polyline(_closed(ring), Color(1, 1, 1, rng.randf_range(0.03, 0.075)), 2.0, true)
+
+
+func _draw_slow_fields(ci: CanvasItem) -> void:
+	for s: Dictionary in _slow_fields:
+		var p: Vector2 = s["pos"]
+		var r: float = s["r"]
+		var tint: Color = Color(KELP_DARK, 0.30)
+		_fill(ci, _blob(p, Vector2(r, r * 0.78), _seed + int(p.x), 40), tint)
+
+
+func _draw_obstacles(ci: CanvasItem) -> void:
+	for o: Dictionary in _obstacles:
+		match String(o["kind"]):
+			"bombie":
+				_draw_bombie(ci, o["pos"], float(o["r"]))
+			"arch":
+				_draw_arch(ci, o["pos"], o["size"])
+			"sandbar":
+				_draw_sandbar(ci, o["pos"], o["size"])
+			"rock":
+				_draw_boulder(ci, o["pos"], float(o["r"]))
+			"wreck":
+				_draw_wreck(ci, o["pos"], o["size"])
+			"ridge":
+				_draw_ridge(ci, o["pos"], o["size"])
+
+
+func _draw_bombie(ci: CanvasItem, p: Vector2, r: float) -> void:
+	_shadow(ci, p + Vector2(r * 0.25, r * 0.35), r * 1.05, r * 0.42)
+	var dome := PackedVector2Array()
+	for i in range(28):
+		var a := PI + PI * float(i) / 27.0
+		var w := 1.0 + 0.10 * sin(a * 4.0)
+		dome.append(p + Vector2(cos(a) * r * w, sin(a) * r * 0.92 * w))
+	dome.append(p + Vector2(r, r * 0.30))
+	dome.append(p + Vector2(-r, r * 0.30))
+	ci.draw_colored_polygon(dome, Color("9a8468"))
+	ci.draw_colored_polygon(_grow(dome, -r * 0.34), Color("c2a988"))
+	# coral lobes clinging to the head
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(p.x) * 7 + int(p.y)
+	for i in range(5):
+		var a := PI + rng.randf_range(0.25, PI - 0.25)
+		var col: Color = CORAL[int(rng.randf() * CORAL.size()) % CORAL.size()]
+		var tip := p + Vector2(cos(a), sin(a)) * r * rng.randf_range(0.75, 1.05)
+		var mid := p.lerp(tip, 0.5) + Vector2(rng.randf_range(-6.0, 6.0), 0.0)
+		ci.draw_polyline(PackedVector2Array([p, mid, tip]), col, rng.randf_range(4.0, 8.0), true)
+		ci.draw_circle(tip, rng.randf_range(2.5, 5.0), col.lightened(0.25))
+	ci.draw_polyline(_closed(dome), INK, 2.4, true)
+
+
+func _draw_arch(ci: CanvasItem, p: Vector2, size: Vector2) -> void:
+	var half := size * 0.5
+	_shadow(ci, p + Vector2(0, half.y * 0.9), half.x * 1.0, half.y * 0.4)
+	# two pillars and a lintel: a solid arch, convex per piece
+	var pillar := size.x * 0.24
+	for side: float in [-1.0, 1.0]:
+		var px := p.x + side * (half.x - pillar * 0.5)
+		var r := Rect2(px - pillar * 0.5, p.y - half.y, pillar, size.y)
+		ci.draw_rect(r, ROCK, true)
+		ci.draw_rect(r.grow(-pillar * 0.22), ROCK_DARK, true)
+		ci.draw_rect(r, INK, false, 2.4)
+	var lintel := Rect2(p.x - half.x, p.y - half.y, size.x, size.y * 0.30)
+	ci.draw_rect(lintel, ROCK, true)
+	ci.draw_rect(lintel.grow(-6.0), ROCK_DARK, true)
+	ci.draw_rect(lintel, INK, false, 2.4)
+
+
+func _draw_sandbar(ci: CanvasItem, p: Vector2, size: Vector2) -> void:
+	var half := size * 0.5
+	var r := Rect2(p - half, size)
+	_shadow(ci, p + Vector2(half.x * 0.2, half.y * 0.9), half.x * 1.05, half.y * 0.5)
+	ci.draw_rect(r.grow(6.0), Color(FLOOR_SHADE[_biome], 0.85), true)
+	ci.draw_rect(r, Color(FLOOR_SAND[_biome], 0.98), true)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(p.x) + int(p.y) * 3
+	for _i in range(14):
+		var q := Vector2(rng.randf_range(r.position.x, r.end.x), rng.randf_range(r.position.y, r.end.y))
+		ci.draw_arc(q, rng.randf_range(5.0, 12.0), PI * 1.1, PI * 1.9, 7, Color(FLOOR_SHADE[_biome], 0.6), 1.6, true)
+	ci.draw_rect(r, Color(FLOOR_SHADE[_biome], 0.9), false, 2.4)
+
+
+func _draw_boulder(ci: CanvasItem, p: Vector2, r: float) -> void:
+	_shadow(ci, p + Vector2(r * 0.3, r * 0.4), r * 1.05, r * 0.34)
+	var pts := PackedVector2Array([p + Vector2(-r, r * 0.35), p + Vector2(-r * 0.62, -r * 0.55),
+			p + Vector2(-r * 0.05, -r * 0.92), p + Vector2(r * 0.60, -r * 0.48), p + Vector2(r, r * 0.35)])
+	ci.draw_colored_polygon(pts, ROCK)
+	ci.draw_colored_polygon(PackedVector2Array([p + Vector2(-r * 0.05, -r * 0.92), p + Vector2(r * 0.60, -r * 0.48),
+			p + Vector2(r, r * 0.35), p + Vector2(0, r * 0.35)]), ROCK_DARK)
+	ci.draw_polyline(_closed(pts), INK, 2.6, true)
+
+
+func _draw_wreck(ci: CanvasItem, p: Vector2, size: Vector2) -> void:
+	var half := size * 0.5
+	_shadow(ci, p + Vector2(half.x * 0.2, half.y * 0.9), half.x * 1.05, half.y * 0.45)
+	var hull := PackedVector2Array([p + Vector2(-half.x, 0), p + Vector2(-half.x * 0.72, -half.y),
+			p + Vector2(half.x * 0.62, -half.y * 0.86), p + Vector2(half.x, -half.y * 0.1),
+			p + Vector2(half.x * 0.82, half.y * 0.7), p + Vector2(-half.x * 0.55, half.y)])
+	ci.draw_colored_polygon(hull, Color("5b6660"))
+	ci.draw_colored_polygon(_grow(hull, -minf(half.x, half.y) * 0.30), Color("74807a"))
+	ci.draw_polyline(_closed(hull), INK, 2.8, true)
+	# broken deck ribs
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(p.x) * 5 + int(p.y)
+	for i in range(5):
+		var t := float(i) / 4.0
+		var x := lerpf(p.x - half.x * 0.7, p.x + half.x * 0.6, t)
+		ci.draw_line(Vector2(x, p.y - half.y * 0.75), Vector2(x, p.y + half.y * 0.55),
+				Color(0.72, 0.76, 0.75, 0.55), 3.0, true)
+	for i in range(3):
+		var a := rng.randf_range(-PI, 0.0)
+		var q := p + Vector2(cos(a), sin(a)) * half.y * rng.randf_range(0.6, 1.0)
+		ci.draw_circle(q, rng.randf_range(3.0, 6.0), Color(KELP_LIGHT, 0.8))
+
+
+func _draw_ridge(ci: CanvasItem, p: Vector2, size: Vector2) -> void:
+	var half := size * 0.5
+	_shadow(ci, p + Vector2(0, half.y * 0.9), half.x * 1.02, half.y * 0.45)
+	var pts := PackedVector2Array()
+	var n := 9
+	for i in range(n):
+		var t := float(i) / float(n - 1)
+		var x := lerpf(p.x - half.x, p.x + half.x, t)
+		var jag := sin(t * PI * 3.0) * half.y * 0.5
+		pts.append(Vector2(x, p.y - half.y - jag))
+	pts.append(Vector2(p.x + half.x, p.y + half.y))
+	pts.append(Vector2(p.x - half.x, p.y + half.y))
+	ci.draw_colored_polygon(pts, Color("453d38"))
+	ci.draw_polyline(_closed(pts), INK, 2.6, true)
+	# molten seams through the glass
+	ci.draw_line(Vector2(p.x - half.x * 0.75, p.y - half.y * 0.2),
+			Vector2(p.x + half.x * 0.8, p.y - half.y * 0.05), Color(LAVA, 0.85), 3.0, true)
+	ci.draw_line(Vector2(p.x - half.x * 0.4, p.y + half.y * 0.3),
+			Vector2(p.x + half.x * 0.35, p.y + half.y * 0.15), Color(LAVA_HOT, 0.7), 2.0, true)
+
+
+func _draw_hazard_rings(ci: CanvasItem) -> void:
+	for h: Dictionary in _hazards:
+		var p: Vector2 = h["pos"]
+		var r: float = h["r"]
+		var ring := PackedVector2Array()
+		for i in range(30):
+			var a := TAU * float(i) / 30.0
+			ring.append(p + Vector2(cos(a) * r, sin(a) * r * 0.82))
+		_fill(ci, ring, Color(0.5, 0.20, 0.06, 0.28))
+		ci.draw_polyline(_closed(ring), Color(LAVA, 0.5), 2.0, true)
 
 
 func _draw_rim_rocks(ci: CanvasItem) -> void:
@@ -462,7 +961,36 @@ func _draw_vent(ci: CanvasItem, p: Vector2, s: float) -> void:
 
 func _draw_fx() -> void:
 	var ci := _fx
-	# drifting light shafts
+	# drifting particulate
+	for m in _motes:
+		var t := fmod(_time * 0.05 + m.z, 1.0)
+		var x := m.x + sin(_time * 0.5 + m.z) * 14.0 + t * 40.0
+		var y := m.y - t * 60.0
+		ci.draw_circle(Vector2(x, y), 1.4, Color(0.85, 0.95, 1.0, 0.22 * (1.0 - t)))
+	# shoals that scatter when the sentinel swims near
+	var player := get_tree().get_first_node_in_group("player") as Node2D
+	for s: Dictionary in _shoals:
+		var centre: Vector2 = s["centre"]
+		var phase: float = s["phase"]
+		var flee: Vector2 = s["flee"]
+		if player != null:
+			var d := player.global_position.distance_to(centre)
+			var want := Vector2.ZERO
+			if d < 190.0:
+				want = (centre - player.global_position).normalized() * (190.0 - d) * 0.9
+			s["flee"] = flee.lerp(want, 0.08)
+			flee = s["flee"]
+		else:
+			s["flee"] = flee.lerp(Vector2.ZERO, 0.05)
+			flee = s["flee"]
+		var origin := centre + flee + Vector2(0, sin(_time * 0.8 + phase) * 6.0)
+		for i in range(6):
+			var a := phase + TAU * float(i) / 6.0
+			var q := origin + Vector2(cos(a), sin(a) * 0.55) * (26.0 + float(i % 3) * 12.0)
+			var col := Color(0.9, 0.95, 0.98, 0.35)
+			ci.draw_colored_polygon(PackedVector2Array([q + Vector2(-6, 0), q + Vector2(0, -2.2),
+					q + Vector2(6, 0), q + Vector2(0, 2.2)]), col)
+	# gentler light movement inside the site
 	for l in _lights:
 		var x := l.x + sin(_time * 0.25 + l.z) * 40.0
 		var a := 0.05 + 0.03 * sin(_time * 0.5 + l.z)
@@ -488,6 +1016,32 @@ func _draw_fx() -> void:
 				var q := p + Vector2(sin(t * 5.0 + float(k)) * 10.0, -s - t * 90.0)
 				var a := (1.0 - t) * minf(t * 6.0, 1.0) * 0.35
 				ci.draw_circle(q, 5.0 + t * 13.0, Color(0.75, 0.72, 0.7, a))
+	_draw_geysers(ci)
+
+
+# ================================================================ GEYSERS (fx)
+
+## Eruption columns for the volcanic vents. The damage window lives in
+## _erupt_hazards(); this is the telegraph the player reads.
+func _draw_geysers(ci: CanvasItem) -> void:
+	for h: Dictionary in _hazards:
+		var p: Vector2 = h["pos"]
+		var r: float = h["r"]
+		var t := fmod(_time + float(h["phase"]), GEYSER_PERIOD)
+		if t < GEYSER_WARN:
+			# swell build-up
+			var k := 1.0 - t / GEYSER_WARN
+			ci.draw_circle(p, r * (1.0 - k * 0.35), Color(LAVA, 0.18 + 0.25 * k))
+			ci.draw_arc(p, r, 0.0, TAU, 32, Color(LAVA_HOT, 0.5 + 0.4 * k), 2.5, true)
+		elif t < GEYSER_WARN + 0.55:
+			# eruption
+			var k := (t - GEYSER_WARN) / 0.55
+			var hgt := r * (2.6 - k * 1.4)
+			var col := Color(LAVA_HOT, 0.75 * (1.0 - k))
+			ci.draw_colored_polygon(PackedVector2Array([
+					p + Vector2(-r * 0.85, 0), p + Vector2(-r * 0.25, -hgt),
+					p + Vector2(r * 0.25, -hgt), p + Vector2(r * 0.85, 0)]), col)
+			ci.draw_circle(p, r * (0.8 + k * 0.5), Color(LAVA, 0.30 * (1.0 - k)))
 
 
 # ================================================================ HELPERS
@@ -577,15 +1131,11 @@ func spawn_points(count: int, rng_seed: int) -> Array[Vector2]:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = rng_seed
 	var out: Array[Vector2] = []
-	var centre := _arena * 0.5
-	var safe := _grow(_floor, -70.0)
 	var tries := 0
-	while out.size() < count and tries < count * 60:
+	while out.size() < count and tries < count * 80:
 		tries += 1
 		var p := _pick(rng, Rect2(Vector2(RIM, RIM), _arena - Vector2(RIM, RIM) * 2.0))
-		if not Geometry2D.is_point_in_polygon(p, safe):
-			continue
-		if p.distance_to(centre) < 340.0:
+		if not is_spawn_clear(p):
 			continue
 		var clear := true
 		for q in out:

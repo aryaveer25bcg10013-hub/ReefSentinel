@@ -95,6 +95,7 @@ static func _tournament(scored: Array[Dictionary]) -> InvasiveGenome:
 
 static func _crossover(a: InvasiveGenome, b: InvasiveGenome) -> InvasiveGenome:
 	var child := InvasiveGenome.new()
+	child.species_id = a.species_id if randf() < 0.5 else b.species_id
 	child.acoustic_armor = a.acoustic_armor if randf() < 0.5 else b.acoustic_armor
 	child.spiky_shell = a.spiky_shell if randf() < 0.5 else b.spiky_shell
 	child.heat_sink = a.heat_sink if randf() < 0.5 else b.heat_sink
