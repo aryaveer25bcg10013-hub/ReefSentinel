@@ -39,6 +39,12 @@ const BODY_RADIUS := 14.0
 const ABSORBED_THRESHOLD := 0.5     # below this multiplier a hit reads as "absorbed"
 const IMPACT_COOLDOWN := 0.14       # thins sparks for sustained weapons
 const KNOCKBACK_DECAY := 9.0
+# Animation redraws are throttled to 20 Hz: rebuilding ~60 canvas commands per
+# enemy per frame is the single biggest CPU cost in a big wave, and a drifting
+# jelly at 20 fps is indistinguishable from one at 60. Every *hit* still redraws
+# immediately, so feedback stays instant.
+const REDRAW_INTERVAL := 0.05
+const SLOW_REFRESH := 0.25
 
 # Weapon identity colours for the resistance shimmer and hit sparks.
 const WEAPON_TINT := {
@@ -77,6 +83,8 @@ var _floor: Node = null
 var _slow_factor := 1.0
 var _last_multiplier := 1.0
 var _death_burst_done := false
+var _redraw_timer := 0.0
+var _slow_timer := 0.0
 
 
 func _ready() -> void:
@@ -145,7 +153,14 @@ func _physics_process(delta: float) -> void:
 	_attack_timer = maxf(0.0, _attack_timer - delta)
 	_impulse_cooldown = maxf(0.0, _impulse_cooldown - delta)
 	_knock = _knock.lerp(Vector2.ZERO, minf(1.0, KNOCKBACK_DECAY * delta))
-	_update_slow_factor()
+	_slow_timer -= delta
+	if _slow_timer <= 0.0:
+		_slow_timer = SLOW_REFRESH
+		_update_slow_factor()
+	_redraw_timer += delta
+	if _redraw_timer >= REDRAW_INTERVAL:
+		_redraw_timer = 0.0
+		queue_redraw()
 
 	if not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player") as Node2D
@@ -193,7 +208,6 @@ func _chase(delta: float) -> void:
 	move_and_slide()
 	if velocity.length() > 6.0:
 		_facing = lerp_angle(_facing, velocity.angle(), minf(1.0, 8.0 * delta))
-	queue_redraw()
 
 	if dist <= ATTACK_RANGE and _attack_timer <= 0.0:
 		_attack_timer = ATTACK_COOLDOWN

@@ -150,6 +150,8 @@ const SPAWN_CLEARANCE := 34.0   # enemy body radius 14 + margin
 const ZONE_POOL_SIZE := 26
 const GEYSER_PERIOD := 4.2
 const GEYSER_WARN := 1.1
+const FX_INTERVAL := 1.0 / 30.0
+const MOTE_COUNT := 48
 
 # ================================================================ STATE
 
@@ -167,6 +169,7 @@ var _hazards: Array[Dictionary] = []
 var _shoals: Array[Dictionary] = []
 var _motes: Array[Vector3] = []       # x, y, phase (drifting particulate)
 var _hurt_cooldown := 0.0
+var _fx_timer := 0.0
 
 var _bake: SubViewport
 var _art: Node2D
@@ -213,7 +216,11 @@ func _process(delta: float) -> void:
 	_time += delta
 	_hurt_cooldown = maxf(0.0, _hurt_cooldown - delta)
 	_erupt_hazards()
-	if _fx:
+	# The animated layer is a few hundred primitives; 30 Hz is plenty for slow
+	# particulate and shafts, and halves its CPU cost during a big wave.
+	_fx_timer += delta
+	if _fx != null and _fx_timer >= FX_INTERVAL:
+		_fx_timer = 0.0
 		_fx.queue_redraw()
 
 
@@ -544,7 +551,7 @@ func _build_particles() -> void:
 	for _i in range(6):
 		var p := _pick(rng, inner)
 		_lights.append(Vector3(p.x, p.y, rng.randf() * TAU))
-	for _i in range(90):
+	for _i in range(MOTE_COUNT):
 		var p := _pick(rng, inner)
 		_motes.append(Vector3(p.x, p.y, rng.randf() * TAU))
 
