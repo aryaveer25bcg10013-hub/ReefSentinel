@@ -3,14 +3,19 @@ extends Node
 
 signal island_cleared(id: String)
 signal island_unlocked(id: String)
-## Additive (W6): emitted the first time a species is recorded, so the bestiary
+## Additive (W6): emitted the first time a species is recorded, so the guidebook
 ## can badge it new. No frozen signal is touched.
 signal species_discovered(id: String)
+## Additive (W8): emitted when a reef is credited as restored, so the map and the
+## guidebook can celebrate it without polling.
+signal reef_restored(id: String)
 
 const ISLANDS := ["redwake", "quiet_belt", "harrow", "second_watch", "mire"]
 var cleared: Array[String] = []
 ## Additive (W6/W3): species the player has actually met in the water.
-var bestiary_seen: Array[String] = []
+var species_seen: Array[String] = []
+## Additive (W8): islands whose coral was actually brought back.
+var reefs_restored: Array[String] = []
 const SAVE_PATH := "user://progress.json"
 
 func _ready() -> void:
@@ -31,26 +36,51 @@ func mark_island_cleared(id: String) -> void:
 		if next_idx < ISLANDS.size():
 			island_unlocked.emit(ISLANDS[next_idx])
 
-# ---------- Bestiary (additive) ----------
+# ---------- Guidebook: species records (additive) ----------
 
 func has_seen_species(id: String) -> bool:
-	return bestiary_seen.has(id)
+	return species_seen.has(id)
 
 ## Records a species as discovered. Returns true when this call is what
 ## discovered it, so callers can fire a one-shot toast.
 func mark_species_seen(id: String) -> bool:
-	if id == "" or bestiary_seen.has(id):
+	if id == "" or species_seen.has(id):
 		return false
-	bestiary_seen.append(id)
+	species_seen.append(id)
 	save_progress()
 	species_discovered.emit(id)
 	return true
 
 func seen_species_count() -> int:
-	return bestiary_seen.size()
+	return species_seen.size()
 
-func reset_bestiary() -> void:
-	bestiary_seen.clear()
+func reset_seen() -> void:
+	species_seen.clear()
+	save_progress()
+
+# ---------- Reef restoration (additive, W8) ----------
+
+func is_reef_restored(id: String) -> bool:
+	return reefs_restored.has(id)
+
+
+## Credits an island's reef as restored. Returns true only for the first time,
+## so callers can fire a one-shot celebration.
+func mark_reef_restored(id: String) -> bool:
+	if id == "" or reefs_restored.has(id):
+		return false
+	reefs_restored.append(id)
+	save_progress()
+	reef_restored.emit(id)
+	return true
+
+
+func restored_reef_count() -> int:
+	return reefs_restored.size()
+
+
+func reset_reefs() -> void:
+	reefs_restored.clear()
 	save_progress()
 
 func save_progress() -> void:
@@ -59,7 +89,8 @@ func save_progress() -> void:
 		return
 	f.store_string(JSON.stringify({
 		"cleared": cleared,
-		"seen": bestiary_seen,
+		"seen": species_seen,
+		"restored": reefs_restored,
 	}))
 
 func load_progress() -> void:
@@ -72,8 +103,11 @@ func load_progress() -> void:
 	if not (data is Dictionary):
 		return
 	# Old saves only carry "cleared": read each key defensively so a save written
-	# before the bestiary existed still loads.
+	# before the guidebook or the reef component existed still loads. The JSON keys
+	# are unchanged, so the same file keeps working.
 	if data.has("cleared") and data["cleared"] is Array:
 		cleared.assign(data["cleared"])
 	if data.has("seen") and data["seen"] is Array:
-		bestiary_seen.assign(data["seen"])
+		species_seen.assign(data["seen"])
+	if data.has("restored") and data["restored"] is Array:
+		reefs_restored.assign(data["restored"])

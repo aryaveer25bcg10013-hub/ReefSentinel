@@ -13,12 +13,21 @@ extends CanvasLayer
 #   show_adaptation(lines)                            W3 between-wave banner
 #   show_species_card(name, hint, tint, threat)       W3/W6 first-contact card
 #   set_weapon_status(status)                         W1 cooldown/heat/recharge
+#   set_reef(ratio, state, health, colour)            W8 live reef health readout
+#   show_reef(title, advice, colour)                  W8 restored / bleached notice
+#   show_seed_prompt(text, progress)                  W9 hold-to-plant prompt
+#   show_seed_result(planted, gain)                   W9 planting confirmation
+#
+# HudRoot/AdaptationBanner and HudRoot/DangerVignette keep their exact names and
+# paths: the verification harness reaches for them by path.
+
 
 signal return_to_map_pressed
 signal retry_pressed
 
 const HullBar := preload("res://scenes/ui/hull_bar.gd")
 const DamageVignette := preload("res://scenes/ui/damage_vignette.gd")
+const ReefMeter := preload("res://scenes/ui/reef_meter.gd")
 
 const PAD := 20.0
 const PANEL_BG := Color(0.02, 0.10, 0.18, 0.82)
@@ -37,6 +46,8 @@ const WEAPON_NAMES := {
 }
 const BANNER_TIME := 3.0
 const CARD_TIME := 3.4
+const REEF_NOTICE_TIME := 4.0
+const REEF_PANEL_SIZE := Vector2(316, 74)
 
 var _root: Control
 var _hull: Control
@@ -64,6 +75,21 @@ var _card_title: Label
 var _card_body: Label
 var _banner_timer := 0.0
 var _card_timer := 0.0
+# W8: the coral.
+var _reef_panel: PanelContainer
+var _reef_meter: Control
+var _reef_label: Label
+var _reef_notice: PanelContainer
+var _reef_notice_title: Label
+var _reef_notice_body: Label
+var _reef_notice_timer := 0.0
+var _reef_state := ""
+# W9: the planting action.
+var _seed_panel: PanelContainer
+var _seed_label: Label
+var _seed_bar: Control
+var _seed_hint := ""
+var _reef_start_ratio := 0.45
 var _effect_colour := MUTED
 var _status_colour := MUTED
 var _effect_tooltip := ""
@@ -120,6 +146,54 @@ func _build() -> void:
 	_card_body.custom_minimum_size = Vector2(300, 20)
 	_card_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 
+	# ---- the coral: live reef health, bottom left above the restart button
+	_reef_panel = _make_panel(Vector2(PAD, 0), REEF_PANEL_SIZE)
+	_reef_panel.name = "ReefPanel"
+	_root.add_child(_reef_panel)
+	var reef_box := VBoxContainer.new()
+	reef_box.add_theme_constant_override("separation", 3)
+	_reef_panel.add_child(reef_box)
+	_reef_label = _make_label(reef_box, "REEF HEALTH", Vector2.ZERO, 14, WARN)
+	_reef_label.custom_minimum_size = Vector2(REEF_PANEL_SIZE.x - 36.0, 18)
+	_reef_meter = Control.new()
+	_reef_meter.name = "ReefMeter"
+	_reef_meter.set_script(ReefMeter)
+	_reef_meter.custom_minimum_size = Vector2(REEF_PANEL_SIZE.x - 36.0, 18)
+	reef_box.add_child(_reef_meter)
+
+	# ---- reef state notice (restored / bleached), stacked above the meter
+	_reef_notice = PanelContainer.new()
+	_reef_notice.name = "ReefNotice"
+	_reef_notice.visible = false
+	_reef_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_reef_notice.add_theme_stylebox_override("panel", _panel_style(GOOD))
+	_root.add_child(_reef_notice)
+	var notice_box := VBoxContainer.new()
+	notice_box.add_theme_constant_override("separation", 2)
+	_reef_notice.add_child(notice_box)
+	_reef_notice_title = _make_label(notice_box, "", Vector2.ZERO, 19, GOOD)
+	_reef_notice_title.custom_minimum_size = Vector2(300, 24)
+	_reef_notice_body = _make_label(notice_box, "", Vector2.ZERO, 14, TEXT)
+	_reef_notice_body.custom_minimum_size = Vector2(300, 20)
+	_reef_notice_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+
+	# ---- W9 planting prompt, above the controls hint where the eyes already are
+	_seed_panel = _make_panel(Vector2(0, 0), Vector2(340, 54))
+	_seed_panel.name = "SeedPrompt"
+	_seed_panel.visible = false
+	_root.add_child(_seed_panel)
+	var seed_box := VBoxContainer.new()
+	seed_box.add_theme_constant_override("separation", 3)
+	_seed_panel.add_child(seed_box)
+	_seed_label = _make_label(seed_box, "", Vector2.ZERO, 15, GOOD)
+	_seed_label.custom_minimum_size = Vector2(304, 20)
+	_seed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_seed_bar = Control.new()
+	_seed_bar.name = "SeedBar"
+	_seed_bar.set_script(ReefMeter)
+	_seed_bar.custom_minimum_size = Vector2(304, 12)
+	seed_box.add_child(_seed_bar)
+
 	# ---- island + wave, top centre
 	_island_label = _make_label(_root, "", Vector2(0, PAD), 30, TEXT)
 	_island_label.size = Vector2(600, 40)
@@ -165,7 +239,7 @@ func _build() -> void:
 	_root.add_child(_respawn_button)
 
 	# ---- controls hint, bottom
-	_controls_label = _make_label(_root, "WASD move   •   1 / 2 / 3 switch weapon   •   Left click / Space fire   •   Esc world map",
+	_controls_label = _make_label(_root, "WASD move   •   1 / 2 / 3 switch weapon   •   Left click / Space fire   •   E plant coral at a bed   •   Esc world map",
 			Vector2(0, 0), 15, MUTED)
 	_controls_label.size = Vector2(820, 22)
 	_controls_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -215,6 +289,12 @@ func _process(delta: float) -> void:
 			_card.visible = false
 		else:
 			_card.modulate.a = clampf(_card_timer / 0.6, 0.0, 1.0)
+	if _reef_notice_timer > 0.0:
+		_reef_notice_timer = maxf(0.0, _reef_notice_timer - delta)
+		if _reef_notice_timer <= 0.0:
+			_reef_notice.visible = false
+		else:
+			_reef_notice.modulate.a = clampf(_reef_notice_timer / 0.6, 0.0, 1.0)
 
 
 func _reposition() -> void:
@@ -231,6 +311,15 @@ func _reposition() -> void:
 	_card.position = Vector2(PAD, PAD + 86.0)
 	var card_size := _card.get_combined_minimum_size()
 	_card.size = card_size
+	var reef_size := _reef_panel.size
+	_reef_panel.size = REEF_PANEL_SIZE
+	_reef_panel.position = Vector2(PAD, view.y - PAD - _respawn_button.size.y - 10.0 - reef_size.y)
+	var notice_size := _reef_notice.get_combined_minimum_size()
+	_reef_notice.size = notice_size
+	_reef_notice.position = Vector2(PAD, _reef_panel.position.y - notice_size.y - 8.0)
+	var seed_size := Vector2(340, 54)
+	_seed_panel.size = seed_size
+	_seed_panel.position = Vector2((view.x - seed_size.x) * 0.5, view.y - 150.0 - seed_size.y)
 	_respawn_button.position.y = view.y - PAD - _respawn_button.size.y
 	_controls_label.position.x = (view.x - _controls_label.size.x) * 0.5
 	_controls_label.position.y = view.y - PAD - _controls_label.size.y
@@ -341,6 +430,71 @@ func show_adaptation(lines: Array) -> void:
 	_banner.visible = true
 	_banner.modulate.a = 1.0
 	_banner_timer = BANNER_TIME
+	_reposition()
+
+
+## W8: live reef health. `state` is the word from ReefRestoration.state_label()
+## (RESTORED / THRIVING / HEALING / FAILING / BLEACHED) and `health` the number.
+func set_reef(ratio: float, state: String, health: String, colour: Color) -> void:
+	_set_text(_reef_label, "REEF HEALTH   %s   %s" % [health, state])
+	if state != _reef_state:
+		_reef_state = state
+		_reef_label.add_theme_color_override("font_color", colour)
+	_reef_meter.call("set_reef", ratio, _reef_start_ratio, colour, state == "BLEACHED")
+
+
+## W8: a one-shot reef milestone — the coral came back, or it bleached out.
+func show_reef(title: String, advice: String, colour: Color) -> void:
+	_reef_notice_title.text = title
+	_reef_notice_title.add_theme_color_override("font_color", colour)
+	_reef_notice_body.text = advice
+	_reef_notice.add_theme_stylebox_override("panel", _panel_style(colour))
+	_reef_notice.visible = true
+	_reef_notice.modulate.a = 1.0
+	_reef_notice_timer = REEF_NOTICE_TIME
+	if _reef_meter.has_method("pulse"):
+		_reef_meter.call("pulse")
+	_reposition()
+
+
+## The reef starts where the island says it starts; the meter draws that mark so
+## "how far have we come?" is answerable at a glance.
+func set_reef_start(ratio: float) -> void:
+	_reef_start_ratio = clampf(ratio, 0.0, 1.0)
+	if _reef_meter != null:
+		_reef_meter.call("set_reef", _reef_start_ratio, _reef_start_ratio,
+				_reef_meter.get("_colour"), false)
+
+
+## W9: the planting prompt. Empty text hides it; `progress` fills the bar under
+## the words, so one node carries both "hold E" and "you are halfway there".
+func show_seed_prompt(text: String, progress: float) -> void:
+	if text == "":
+		if _seed_panel.visible:
+			_seed_panel.visible = false
+		return
+	_set_text(_seed_label, text)
+	_seed_panel.visible = true
+	var planting := progress > 0.0
+	if text != _seed_hint:
+		_seed_hint = text
+		_seed_label.add_theme_color_override("font_color", ACCENT if planting else GOOD)
+	# the bar reads as "planting done" when idle, so it never looks stuck at zero
+	_seed_bar.call("set_reef", progress if planting else 1.0, 0.0,
+			ACCENT if planting else GOOD, false)
+
+
+## W9: one-shot confirmation that coral actually landed on the bed.
+func show_seed_result(planted: int, gain: float) -> void:
+	_reef_notice_title.text = "CORAL PLANTED"
+	_reef_notice_title.add_theme_color_override("font_color", GOOD)
+	_reef_notice_body.text = "Head %d is growing on this bed.  +%d reef health." % [planted, int(round(gain))]
+	_reef_notice.add_theme_stylebox_override("panel", _panel_style(GOOD))
+	_reef_notice.visible = true
+	_reef_notice.modulate.a = 1.0
+	_reef_notice_timer = 2.4
+	if _reef_meter.has_method("pulse"):
+		_reef_meter.call("pulse")
 	_reposition()
 
 

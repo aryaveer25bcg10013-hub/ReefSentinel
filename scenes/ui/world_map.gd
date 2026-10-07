@@ -3,7 +3,7 @@ extends Control
 # Every piece of map art is drawn in code: no textures, no extra scenes.
 # Tweak the CONSTANTS section; everything below it is plumbing.
 
-const BESTIARY_SCRIPT := preload("res://scenes/ui/bestiary.gd")
+const GUIDEBOOK_SCRIPT := preload("res://scenes/ui/guidebook.gd")
 
 const ISLAND_BUTTONS := {
 	"redwake": "Redwake",
@@ -167,8 +167,8 @@ var _states: Array[int] = []
 var _banners: Array[Button] = []
 var _current := -1
 var _sub_pos := Vector2.ZERO
-var _bestiary: Control = null
-var _bestiary_button: Button = null
+var _guidebook: Control = null
+var _guidebook_button: Button = null
 
 
 func _ready() -> void:
@@ -206,7 +206,7 @@ func _ready() -> void:
 	_fx.draw.connect(_draw_fx)
 	$Islands.add_child(_fx)
 
-	_setup_bestiary()
+	_setup_guidebook()
 	_rebake()
 	get_viewport().size_changed.connect(_rebake)
 
@@ -317,16 +317,18 @@ func _banner_box(face: Color, edge: Color) -> StyleBoxFlat:
 	return box
 
 
-## W6b: the bestiary book, opened from the map. It is a child of this Control so
-## it simply scales with the viewport, like every other overlay here.
-func _setup_bestiary() -> void:
-	_bestiary = Control.new()
-	_bestiary.name = "Bestiary"
-	_bestiary.set_script(BESTIARY_SCRIPT)
-	add_child(_bestiary)
+## W8: the guidebook, opened from the map. It is a child of this Control so it
+## simply scales with the viewport, like every other overlay here. The book owns
+## its own rect (see scenes/ui/guidebook.gd::_layout) instead of trusting
+## anchors, and it paints an opaque backdrop, so the map cannot show through it.
+func _setup_guidebook() -> void:
+	_guidebook = Control.new()
+	_guidebook.name = "Guidebook"
+	_guidebook.set_script(GUIDEBOOK_SCRIPT)
+	add_child(_guidebook)
 	var button := Button.new()
-	button.name = "BestiaryButton"
-	button.text = "BESTIARY"
+	button.name = "GuidebookButton"
+	button.text = "GUIDEBOOK"
 	button.custom_minimum_size = Vector2(148, 38)
 	button.size = Vector2(148, 38)
 	button.add_theme_font_size_override("font_size", 16)
@@ -341,23 +343,23 @@ func _setup_bestiary() -> void:
 	button.add_theme_stylebox_override("normal", box)
 	button.add_theme_color_override("font_color", Color("f2e3bd"))
 	button.add_theme_color_override("font_hover_color", Color("8dc24a"))
-	button.pressed.connect(_open_bestiary)
+	button.pressed.connect(_open_guidebook)
 	add_child(button)
-	_bestiary_button = button
-	get_viewport().size_changed.connect(_place_bestiary_button)
-	_place_bestiary_button()
+	_guidebook_button = button
+	get_viewport().size_changed.connect(_place_guidebook_button)
+	_place_guidebook_button()
 
 
-func _place_bestiary_button() -> void:
-	if _bestiary_button == null:
+func _place_guidebook_button() -> void:
+	if _guidebook_button == null:
 		return
 	var view := get_viewport_rect().size
-	_bestiary_button.position = Vector2(view.x - _bestiary_button.size.x - 22.0, 20.0)
+	_guidebook_button.position = Vector2(view.x - _guidebook_button.size.x - 22.0, 20.0)
 
 
-func _open_bestiary() -> void:
-	if _bestiary != null:
-		_bestiary.call("open")
+func _open_guidebook() -> void:
+	if _guidebook != null:
+		_guidebook.call("open")
 
 
 func _on_island_pressed(id: String) -> void:
@@ -1010,6 +1012,7 @@ func _draw_fx() -> void:
 		_draw_smoke(ci)
 
 	_draw_ribbon_tails(ci)
+	_draw_restored_reefs(ci)
 
 	if _current >= 0:
 		var spot := _spots[_current]
@@ -1017,6 +1020,25 @@ func _draw_fx() -> void:
 		ci.draw_arc(spot, 11.0 + pulse * 14.0, 0, TAU, 32, Color(PIN_NEXT, 0.8 * (1.0 - pulse)), 2.0, true)
 		var bob := sin(_time * 2.0) * 2.0 if AMBIENT_MOTION else 0.0
 		_draw_sub(ci, _sub_pos + Vector2(0, bob), signf(spot.x - _sub_pos.x))
+
+
+## W8: an island whose coral actually came back gets a small living reef marker
+## beside its dive pin — the map's record of the restoration component. Drawn in
+## the animated layer so it can pulse, like every other living thing on the map.
+func _draw_restored_reefs(ci: CanvasItem) -> void:
+	for i in range(_spots.size()):
+		if not GameProgress.is_reef_restored(String(ISLAND_BUTTONS.keys()[i])):
+			continue
+		var at := _spots[i] + Vector2(BANNER_SIZE.x * 0.5 + 18.0, 10.0)
+		var beat := 0.5 + 0.5 * sin(_time * 2.0 + float(i))
+		ci.draw_circle(at + Vector2(0, 4), 19.0, Color(0.05, 0.30, 0.24, 0.35))
+		for k in range(5):
+			var a := TAU * float(k) / 5.0 + 0.4
+			var tip := at + Vector2(cos(a), sin(a)) * (11.0 + 1.6 * beat)
+			ci.draw_line(at, tip, Color("ff7aa2"), 3.4, true)
+			ci.draw_line(at, tip, Color("ffd7e2"), 1.8, true)
+			ci.draw_circle(tip, 2.0 + beat, Color(1.0, 0.96, 0.80, 0.9))
+		ci.draw_circle(at, 4.0, Color("ff9ab8"))
 
 
 func _draw_smoke(ci: CanvasItem) -> void:

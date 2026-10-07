@@ -21,6 +21,7 @@
 <body>
 <h1>Reef Sentinel — verification screenshots</h1>
 <p class="sub">Produced by <code>tools/verify_ui.gd</code> (windowed render pass, 1152&times;648). Every image is a real frame of the game, not a mock-up.</p>
+<p class="sub">Open this file directly in a browser — the game project lives outside this workspace, so nothing here is served.</p>
 
 <figure>
 	<img src="01_world_map.png" alt="World map">
@@ -28,18 +29,18 @@
 </figure>
 
 <figure>
-	<img src="02_bestiary_book.png" alt="Bestiary, first entry">
-	<figcaption><b>02 — Bestiary.</b> Code-drawn open book: coral-green cover frame, parchment pages with stains and a shaded gutter, white diamond ornament. First recorded species.</figcaption>
+	<img src="02_guidebook_invader_entry.png" alt="Guidebook, invasive species entry">
+	<figcaption><b>02 — Guidebook.</b> A full-screen, opaque book now: coral-green cover frame, parchment pages with stains and a shaded gutter, white diamond ornament. Left page: species name, threat pips, portrait and field notes. Right page: the stat block, weakness, resistances and spawn zones, all read from the same species table the enemies use. The map behind it is completely covered — the old overlay drew no book at all, so its labels floated over the ocean.</figcaption>
 </figure>
 
 <figure>
-	<img src="03_bestiary_second_entry.png" alt="Bestiary, second entry">
-	<figcaption><b>03 — Bestiary, second entry.</b> Species art, stat block, weakness and spawn zones, all read from the same species table the enemies use.</figcaption>
+	<img src="03_guidebook_helper_entry.png" alt="Guidebook, reef helper entry">
+	<figcaption><b>03 — Guidebook, reef helper entry.</b> The friendly species get their own entries in the same format: reef role, restore rate per second, and the promise that they are harmless. The tab row under the invaders leads to them.</figcaption>
 </figure>
 
 <figure>
-	<img src="04_bestiary_third_entry.png" alt="Bestiary, third entry">
-	<figcaption><b>04 — Bestiary, third entry.</b> Page navigation and the field-log counter.</figcaption>
+	<img src="04_guidebook_last_entry.png" alt="Guidebook, last entry">
+	<figcaption><b>04 — Guidebook, last entry.</b> Page navigation, the field-log counter and the reefs-restored tally. Nine entries, all named and detailed whether or not the player has met them.</figcaption>
 </figure>
 
 <figure>
@@ -85,6 +86,36 @@
 <figure>
 	<img src="12_level_harrow.png" alt="Harrow, volcanic vents">
 	<figcaption><b>12 — Harrow.</b> Volcanic vents: dark rock, ember drift and geysers, the full six-species roster.</figcaption>
+</figure>
+
+<figure>
+	<img src="13_reef_healthy.png" alt="A dive in progress with the reef meter">
+	<figcaption><b>13 — The reef component, mid-dive.</b> Coral beds with a friendly species working them, and the REEF HEALTH meter bottom-left (with the mark showing where this island's reef started).</figcaption>
+</figure>
+
+<figure>
+	<img src="14_reef_bleached.png" alt="The same coral bed, bleached">
+	<figcaption><b>14 — Bleached.</b> The same beds with the reef at zero: bone-white skeleton, polyps gone, an algae mat over everything. Forcing the reef to 0 in the harness is how the comparison below is made honest.</figcaption>
+</figure>
+
+<figure>
+	<img src="15_reef_restored.png" alt="The same coral bed, restored">
+	<figcaption><b>15 — Restored.</b> The same beds at full health: warm, saturated coral with open polyps and a glow. Measured across the three beds, the coral's mean red-green warmth goes from 0.034 bleached to 0.093 restored.</figcaption>
+</figure>
+
+<figure>
+	<img src="16_plant_prompt.png" alt="A coral bed with the sentinel on it and a plant prompt">
+	<figcaption><b>16 — Planting, ready.</b> The lull after a wave: the sentinel parked on a coral bed, a dashed ready ring drawn around the bed, and the <b>HOLD &nbsp;E&nbsp; TO PLANT CORAL</b> prompt with its bar. This state only exists once the wave is over and the water is empty — a momentary gap between two spawns of a live wave leaves the prompt hidden, and holding the key through one plants nothing.</figcaption>
+</figure>
+
+<figure>
+	<img src="17_planting_coral.png" alt="Mid-hold: an arc filling around the coral bed">
+	<figcaption><b>17 — Planting.</b> Mid-hold: the arc sweeps around the bed's rim as the 1.6 s channel runs, and the prompt bar fills with it. The bar and the ring are drawn in code in <code>scenes/levels/reef_site.gd</code>.</figcaption>
+</figure>
+
+<figure>
+	<img src="18_coral_planted.png" alt="The planted coral head landing, with the HUD confirmation">
+	<figcaption><b>18 — Planted.</b> The head landed: a burst on the bed, a real new coral head on the colony, and the confirmation <i>CORAL PLANTED — Head 1 is growing on this bed. +14 reef health.</i> The harness reads the bed's own head count before and after, so the coral growing is measured, not assumed.</figcaption>
 </figure>
 
 </body>

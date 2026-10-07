@@ -1,8 +1,10 @@
 extends RefCounted
-## Shared species database — the ONE source of truth for invasive species.
+## Shared species database — the ONE source of truth for every species in the
+## reef, invaders and helpers alike.
 ##
-## Read by the enemy (spawning + art), the wave manager (species/zone weighting)
-## and the in-game bestiary, so the book and the swarm can never disagree.
+## Read by the enemy (spawning + art), the wave manager (species/zone weighting),
+## the friendly reef creatures and the in-game guidebook, so the book, the swarm
+## and the helpers can never disagree.
 ##
 ## const SpeciesDB := preload("res://systems/species_db.gd")
 ##
@@ -15,6 +17,8 @@ extends RefCounted
 ##   bubble  : (1 - spiky_shell)    * (1 + heat_sink)     -> beats Heat Sink
 ##   thermal : (1 - heat_sink)      * (1 + acoustic_armor) -> beats Acoustic Armor
 
+## The invasive roster. Nothing in this list is ever friendly, and every one of
+## them is fair game for the player's weapons, the wave manager and the GA.
 const ORDER: Array[String] = [
 	"drifter_jelly",
 	"spine_urchin",
@@ -23,6 +27,75 @@ const ORDER: Array[String] = [
 	"bone_ray",
 	"steelhead_bloom",
 ]
+
+## ---- reef helpers (never hostile) ----------------------------------------
+## Species that live in the same water but fight for the reef instead of the
+## player: they are never spawned by the wave manager, never join group
+## "invasive", can take no damage from any weapon, and never reach the genetic
+## algorithm. Each one hands health back to the reef it patrols
+## (systems/reef_restoration.gd reads `restore_rate`).
+##
+## Kept in their own table on purpose: ORDER stays exactly the six invaders the
+## frozen contract and the GA are built around.
+const FRIENDLY_ORDER: Array[String] = [
+	"reef_parrotfish",
+	"cleaner_wrasse",
+	"gardener_crab",
+]
+
+const FRIENDLY := {
+	"reef_parrotfish": {
+		"id": "reef_parrotfish",
+		"name": "Reef Parrotfish",
+		"role": "GRAZER",
+		"blurb": "A blunt-beaked grazer that scrapes invasive algae off living coral.",
+		"lore": "The mat that smothers a reef is food to a parrotfish. It works the coral heads the swarm has fouled, rasping the growth back to bare skeleton so the polyps can open again.",
+		"help": "Rasps the invasive algae mat off the coral heads.",
+		"threat": 0,
+		"restore_rate": 1.35,
+		"home_zone": "coral_shelf",
+		"home_zone_by_island": {"quiet_belt": "wreck_shallows", "harrow": "ridge_ruins"},
+		"islands": ["redwake", "quiet_belt", "harrow"],
+		"shape": "parrotfish",
+		"tint": Color("2fb3a0"),
+		"accent": Color("ffd05e"),
+		"size": 1.0,
+	},
+	"cleaner_wrasse": {
+		"id": "cleaner_wrasse",
+		"name": "Cleaner Wrasse",
+		"role": "CLEANER",
+		"blurb": "A slim blue cleaner that picks parasites and dead tissue out of polyps.",
+		"lore": "A reef station on fins. Wherever a wrasse works, the polyps around it stay clear of parasites and bleached tissue, and a damaged head recovers faster for it.",
+		"help": "Cleans parasites and dead tissue off the polyps.",
+		"threat": 0,
+		"restore_rate": 1.00,
+		"home_zone": "wreck_shallows",
+		"home_zone_by_island": {"redwake": "sand_bar", "harrow": "bone_flats"},
+		"islands": ["redwake", "quiet_belt", "harrow"],
+		"shape": "wrasse",
+		"tint": Color("3f6fd8"),
+		"accent": Color("9fe8ff"),
+		"size": 0.9,
+	},
+	"gardener_crab": {
+		"id": "gardener_crab",
+		"name": "Gardener Crab",
+		"role": "NURSERY",
+		"blurb": "A reef crab that wedges loose coral fragments back onto bare rock.",
+		"lore": "It carries the future of the reef in its claws. Fragments that would have rolled away in the current are pressed into the rock and held there until they take hold — the slowest, most stubborn kind of repair.",
+		"help": "Cements loose coral fragments back onto the reef.",
+		"threat": 0,
+		"restore_rate": 1.15,
+		"home_zone": "ridge_ruins",
+		"home_zone_by_island": {"redwake": "channel", "quiet_belt": "kelp_trench"},
+		"islands": ["redwake", "quiet_belt", "harrow"],
+		"shape": "crab",
+		"tint": Color("d9623f"),
+		"accent": Color("ffd9a8"),
+		"size": 0.95,
+	},
+}
 
 ## Spawn-zone display names. Zone ids are shared across biomes where the
 ## terrain reads the same (open water and channels exist everywhere).
@@ -46,7 +119,7 @@ const FLOOR_SLOTS := 1
 
 ## Canonical zone ids per island. The procedural floor builds these same zones
 ## (scenes/levels/reef_floor.gd, keyed by biome) and the spawn audit asserts the
-## two agree, so the bestiary can list where a species shows up without loading
+## two agree, so the guidebook can list where a species shows up without loading
 ## a level.
 const ISLAND_ZONES := {
 	"redwake": ["open_water", "coral_shelf", "sand_bar", "channel"],
@@ -185,6 +258,47 @@ static func get_all_species_ids() -> Array[String]:
 	return ORDER.duplicate()
 
 
+# ---- reef helpers --------------------------------------------------------
+
+## Every species the guidebook has an entry for, invaders first. The book is the
+## only caller: gameplay must keep using ORDER (invaders) and FRIENDLY_ORDER.
+static func get_all_guidebook_ids() -> Array[String]:
+	var out: Array[String] = []
+	for sid: String in ORDER:
+		out.append(sid)
+	for sid: String in FRIENDLY_ORDER:
+		out.append(sid)
+	return out
+
+
+static func is_friendly(species_id: String) -> bool:
+	return FRIENDLY.has(species_id)
+
+
+static func is_invasive(species_id: String) -> bool:
+	return SPECIES.has(species_id)
+
+
+static func get_helper(species_id: String) -> Dictionary:
+	return FRIENDLY.get(species_id, FRIENDLY["reef_parrotfish"])
+
+
+## One dictionary for either roster, so the guidebook can lay out an entry the
+## same way whoever it is describing.
+static func get_species_any(species_id: String) -> Dictionary:
+	if FRIENDLY.has(species_id):
+		return FRIENDLY[species_id]
+	return get_species(species_id)
+
+
+## What one helper of this species adds to the reef per second, before the
+## restoration system applies its own scaling.
+static func restore_rate(species_id: String) -> float:
+	if not FRIENDLY.has(species_id):
+		return 0.0
+	return float((FRIENDLY[species_id] as Dictionary).get("restore_rate", 0.0))
+
+
 static func get_species_for_island(island_id: String) -> Array[String]:
 	var result: Array[String] = []
 	for sid in ORDER:
@@ -211,11 +325,11 @@ static func home_zone_for_island(species_id: String, island_id: String) -> Strin
 	return resolve_home_zone(species_id, island_id, zone_ids_for_island(island_id))
 
 
-## Where a species can be met, for the bestiary: one row per island it is part
+## Where a species can be met, for the guidebook: one row per island it is part
 ## of, naming its home zone and every other zone it still turns up in.
 static func spawn_rows(species_id: String) -> Array[Dictionary]:
 	var rows: Array[Dictionary] = []
-	var data := get_species(species_id)
+	var data := get_species_any(species_id)
 	for island: String in (data.get("islands", []) as Array):
 		var zones := zone_ids_for_island(island)
 		if zones.is_empty():
@@ -230,6 +344,9 @@ static func spawn_rows(species_id: String) -> Array[Dictionary]:
 
 
 static func weakness_text(species_id: String) -> String:
+	if FRIENDLY.has(species_id):
+		return "%s — %s" % [String((FRIENDLY[species_id] as Dictionary).get("role", "HELPER")),
+				String((FRIENDLY[species_id] as Dictionary).get("help", ""))]
 	var data := get_species(species_id)
 	var weak: Array = data.get("weak_to", [])
 	if weak.is_empty():
@@ -241,6 +358,8 @@ static func weakness_text(species_id: String) -> String:
 
 
 static func resists_text(species_id: String) -> String:
+	if FRIENDLY.has(species_id):
+		return "Harmless to you"
 	var data := get_species(species_id)
 	var resists: Array = data.get("resists", [])
 	if resists.is_empty():
@@ -342,10 +461,26 @@ static func is_weak_to(species_id: String, weapon_id: String) -> bool:
 # ---- validation ----------------------------------------------------------
 
 ## Machine-checkable audit of the species table: every species must really be
-## hurt more by its declared weakness and really resist what it claims. Returns
-## a list of human-readable problems; empty means the table is honest.
+## hurt more by its declared weakness and really resist what it claims, and no
+## reef helper may be mistaken for something the player can shoot. Returns a
+## list of human-readable problems; empty means the table is honest.
 static func audit() -> Array[String]:
 	var problems: Array[String] = []
+	for sid: String in FRIENDLY_ORDER:
+		if SPECIES.has(sid):
+			problems.append("helper %s is also in the invasive roster" % sid)
+			continue
+		var helper: Dictionary = FRIENDLY[sid]
+		if float(helper.get("restore_rate", 0.0)) <= 0.0:
+			problems.append("helper %s restores nothing" % sid)
+		if int(helper.get("threat", 1)) != 0:
+			problems.append("helper %s declares a threat level" % sid)
+		if helper.has("weak_to") or helper.has("resists"):
+			problems.append("helper %s declares combat resistances" % sid)
+		if String(helper.get("role", "")) == "":
+			problems.append("helper %s has no reef role" % sid)
+		if String(helper.get("shape", "")) == "":
+			problems.append("helper %s has no art shape" % sid)
 	for sid in ORDER:
 		var data: Dictionary = SPECIES[sid]
 		var genome := create_baseline_genome(sid)

@@ -1,19 +1,30 @@
 extends Control
-## The bestiary (W6b): an open book reachable from the world map.
+## The Guidebook (W8) — the reef's field guide, opened from the world map.
 ##
-## Everything is drawn in code, exactly like world_map.gd and reef_floor.gd —
-## the owner's reference image is a watermarked stock asset used for STYLE ONLY
-## and is not copied or shipped here. The look it asks for: near-black backdrop,
-## a green coral/seaweed cover grown inward from the corners, cream parchment
-## pages with faint blotches and a shaded centre gutter, a small white diamond
-## ornament with a rule under it above the book, and bookmark tabs at the bottom
-## centre. Those tabs are also the species selector.
+## This replaces the hovering bestiary overlay. The old version never sized
+## itself: it was added to a parent Control that had already finished its layout
+## pass, so anchors alone left it 0x0 and its own _draw() bailed out — every
+## label landed on top of the map with no book under it. The fix is that this
+## node owns its rect outright (see _layout) and the first thing _draw() paints
+## is a fully opaque backdrop, so nothing from the map can show through.
+##
+## Everything is drawn in code, exactly like world_map.gd and reef_floor.gd — the
+## owner's reference image is a watermarked stock asset used for STYLE ONLY and
+## is not copied or shipped here. The look it asks for: near-black backdrop, a
+## green coral cover grown inward from the corners, cream parchment pages with
+## faint blotches and a shaded centre gutter, a white diamond ornament above the
+## book, and bookmark tabs at the bottom that double as the species selector.
 ##
 ## Content comes from systems/species_db.gd — the same single source of truth the
-## enemy and the wave manager read — so the book can never disagree with the
-## swarm. Undiscovered species show as silhouettes with ???.
+## enemy, the wave manager and the friendly creatures read — so the book can
+## never disagree with the water. Every species has a named entry with its own
+## art, stats and zones: discovery only badges an entry, it never hides one.
+##
+## Public API (used by world_map.gd and tools/verify_ui.gd):
+##   open()  close()  is_open()  step(dir)  signal closed
 
 const SpeciesDB := preload("res://systems/species_db.gd")
+const ReefArt := preload("res://scenes/levels/reef_art.gd")
 
 signal closed
 
@@ -27,31 +38,35 @@ const PAGE_SHADE := Color("d8c08a")
 const PAGE_BAND := Color("b7905c")
 const INK := Color("4a2f18")
 const INK_SOFT := Color("6d4a24")
+const HELPER_INK := Color("1d6039")
 const ACCENT := Color("f6f7f2")
 const THREAT_COLOUR := [Color("5c8f3a"), Color("c9a227"), Color("c0492c")]
 
-const COVER_EDGE := 36.0
+const COVER_EDGE := 34.0
 const SPINE := 26.0
-const TAB_SIZE := Vector2(74, 26)
-const FONT_SIZES := {"name": 34, "head": 17, "body": 15, "small": 13}
+const TAB_SIZE := Vector2(112, 26)
+const FONT_SIZES := {"name": 34, "head": 17, "body": 15, "small": 13, "tiny": 12}
 
 var _ids: Array[String] = []
 var _index := 0
 var _time := 0.0
 
+var _book := Rect2()
+var _pages := Rect2()
 var _left_page := Rect2()
 var _right_page := Rect2()
-var _book := Rect2()
 var _portrait := Rect2()
 
 var _name_label: Label
 var _meta_label: Label
 var _blurb_label: Label
+var _lore_label: Label
 var _stats_label: Label
 var _weak_label: Label
 var _zone_label: Label
-var _lore_label: Label
 var _progress_label: Label
+var _footer_label: Label
+var _helper_caption: Label
 var _tabs: Array[Button] = []
 var _prev_button: Button
 var _next_button: Button
@@ -60,11 +75,13 @@ var _rng := RandomNumberGenerator.new()
 
 
 func _ready() -> void:
-	name = "Bestiary"
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	name = "Guidebook"
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
-	_ids = SpeciesDB.get_all_species_ids()
+	# Closed is the normal state on the map, so a closed book processes nothing:
+	# open() turns the per-frame redraw back on.
+	set_process(false)
+	_ids = SpeciesDB.get_all_guidebook_ids()
 	_build_children()
 	get_viewport().size_changed.connect(_layout)
 	_layout()
@@ -83,6 +100,9 @@ func _build_children() -> void:
 	_zone_label = _make_label(FONT_SIZES["body"], INK)
 	_zone_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_progress_label = _make_label(FONT_SIZES["small"], INK_SOFT)
+	_footer_label = _make_label(FONT_SIZES["small"], INK_SOFT)
+	_helper_caption = _make_label(FONT_SIZES["small"], HELPER_INK)
+	_helper_caption.visible = false
 
 	for i in _ids.size():
 		var tab := Button.new()
@@ -93,21 +113,20 @@ func _build_children() -> void:
 		add_child(tab)
 		_tabs.append(tab)
 
-	_prev_button = _page_button("<")
-	_prev_button.pressed.connect(func() -> void: _step(-1))
-	_next_button = _page_button(">")
-	_next_button.pressed.connect(func() -> void: _step(1))
-	_close_button = _page_button("Close  (Esc)")
-	_close_button.size = Vector2(140, 34)
-	_close_button.custom_minimum_size = Vector2(140, 34)
+	_prev_button = _page_button("<", Vector2(30, 34))
+	_prev_button.pressed.connect(func() -> void: step(-1))
+	_next_button = _page_button(">", Vector2(30, 34))
+	_next_button.pressed.connect(func() -> void: step(1))
+	_close_button = _page_button("Close  (Esc)", Vector2(140, 34))
+	_close_button.add_theme_font_size_override("font_size", 16)
 	_close_button.pressed.connect(close)
 
 
-func _page_button(text: String) -> Button:
+func _page_button(text: String, size_v: Vector2) -> Button:
 	var button := Button.new()
 	button.text = text
-	button.size = Vector2(46, 46)
-	button.custom_minimum_size = button.size
+	button.size = size_v
+	button.custom_minimum_size = size_v
 	button.add_theme_font_size_override("font_size", 20)
 	add_child(button)
 	return button
@@ -120,10 +139,15 @@ func open() -> void:
 	set_process(true)
 	_refresh()
 	move_to_front()
+	# The book has to be in front of the map's own buttons, not just its art.
+	for child in get_children():
+		if child is CanvasItem:
+			(child as CanvasItem).z_index = 1
 
 
 func close() -> void:
 	visible = false
+	set_process(false)
 	closed.emit()
 
 
@@ -131,27 +155,7 @@ func is_open() -> bool:
 	return visible
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	if not visible:
-		return
-	if event.is_action_pressed("ui_cancel"):
-		close()
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
-		_step(1)
-		get_viewport().set_input_as_handled()
-	elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
-		_step(-1)
-		get_viewport().set_input_as_handled()
-
-
-func _process(delta: float) -> void:
-	_time += delta
-	queue_redraw()
-
-
-func _step(direction: int) -> void:
+func step(direction: int) -> void:
 	if _ids.is_empty():
 		return
 	_index = posmod(_index + direction, _ids.size())
@@ -163,55 +167,88 @@ func _select(index: int) -> void:
 	_refresh()
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event.is_action_pressed("ui_cancel"):
+		close()
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+		step(1)
+		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+		step(-1)
+		get_viewport().set_input_as_handled()
+
+
+func _process(delta: float) -> void:
+	_time += delta
+	queue_redraw()
+
+
 # ================================================================ CONTENT
 
 func _refresh() -> void:
 	if _ids.is_empty():
 		return
 	var sid := _ids[_index]
-	var data := SpeciesDB.get_species(sid)
-	var discovered := GameProgress.has_seen_species(sid)
-	var display := String(data.get("name", sid))
+	var friendly := SpeciesDB.is_friendly(sid)
+	var data := SpeciesDB.get_species_any(sid)
+	var recorded := GameProgress.has_seen_species(sid)
 	var threat := int(data.get("threat", 1))
 
-	_name_label.text = display if discovered else "Unknown species"
-	_meta_label.text = "%s   •   THREAT %s   •   %s" % [
-		sid, _threat_pips(threat),
-		"recorded" if discovered else "not yet encountered"]
-	_meta_label.add_theme_color_override("font_color", INK_SOFT)
+	_name_label.text = String(data.get("name", sid))
+	_name_label.add_theme_color_override("font_color", HELPER_INK if friendly else INK)
 
-	if discovered:
-		_blurb_label.text = String(data.get("blurb", ""))
-		_lore_label.text = String(data.get("lore", ""))
-		_stats_label.text = _stats_text(data)
+	var standing := "REEF HELPER — HARMLESS" if friendly \
+			else "THREAT %s" % _threat_pips(threat)
+	_meta_label.text = "%s   •   %s   •   %s" % [sid, standing,
+			"RECORDED" if recorded else "NOT YET RECORDED"]
+	_meta_label.add_theme_color_override("font_color",
+			HELPER_INK if friendly else INK_SOFT)
+
+	_blurb_label.text = String(data.get("blurb", ""))
+	_lore_label.text = String(data.get("lore", ""))
+	_stats_label.text = _helper_stats_text(data) if friendly else _stats_text(data)
+	if friendly:
+		_weak_label.text = "REEF ROLE   %s — %s\nHARM TO YOU   None. It never attacks the sentinel." % [
+			String(data.get("role", "HELPER")), String(data.get("help", ""))]
+	else:
 		_weak_label.text = "WEAKNESS   %s\nRESISTS    %s" % [
 			SpeciesDB.weakness_text(sid), SpeciesDB.resists_text(sid)]
-		_zone_label.text = _zones_text(sid)
-	else:
-		_blurb_label.text = "No field notes yet. Encounter this species on a dive and its entry fills itself in."
-		_lore_label.text = ""
-		_stats_label.text = "BASE STRAIN\n  ARMOUR      --  [..........]\n  SPIKES      --  [..........]\n  HEAT SINK   --  [..........]\n  SWIM SPEED  --  [..........]\n  BODY MASS   --  [..........]"
-		_weak_label.text = "WEAKNESS   ???\nRESISTS    ???"
-		_zone_label.text = "SPAWN ZONES\n  ???"
+	_zone_label.text = _zones_text(sid, friendly)
+	_helper_caption.visible = friendly
+	_helper_caption.text = "REEF HELPER — works the coral, cannot be harmed"
 
 	var seen := 0
 	for id: String in _ids:
 		if GameProgress.has_seen_species(id):
 			seen += 1
-	_progress_label.text = "FIELD LOG  %d / %d species recorded" % [seen, _ids.size()]
+	_progress_label.text = "FIELD LOG   %d / %d species recorded" % [seen, _ids.size()]
+	_footer_label.text = "REEFS RESTORED   %d / %d islands   •   entry %d / %d" % [
+		GameProgress.restored_reef_count(), 3, _index + 1, _ids.size()]
 
 	for i in _tabs.size():
-		var tab_id := _ids[i]
-		var known := GameProgress.has_seen_species(tab_id)
-		tab_label_text(i, known, tab_id)
+		_tab_label_text(i, _ids[i])
 	_layout()
 
 
-func tab_label_text(i: int, known: bool, sid: String) -> void:
+## Tabs are the species selector, and they are labelled even for species the
+## player has not met: the book is a guide, so it names what is out there.
+func _tab_label_text(i: int, sid: String) -> void:
 	var tab := _tabs[i]
-	tab.text = String(SpeciesDB.get_species(sid).get("name", sid)).substr(0, 5).to_upper() if known else "???"
+	var data := SpeciesDB.get_species_any(sid)
+	var friendly := SpeciesDB.is_friendly(sid)
+	var recorded := GameProgress.has_seen_species(sid)
+	tab.text = String(data.get("name", sid)).to_upper()
 	var box := StyleBoxFlat.new()
-	box.bg_color = COVER_LIGHT if i == _index else COVER
+	var base := COVER if not friendly else Color("2f6d4a")
+	# an entry the player has not met yet stays on the shelf, slightly dimmer, but
+	# it keeps its name: this book names every species in the reef.
+	if not recorded and i != _index:
+		base = base.darkened(0.22)
+	box.bg_color = COVER_LIGHT if i == _index else base
 	box.border_color = COVER_DARK
 	box.set_border_width_all(2)
 	box.set_corner_radius_all(4)
@@ -220,7 +257,7 @@ func tab_label_text(i: int, known: bool, sid: String) -> void:
 	box.content_margin_left = 6.0
 	box.content_margin_right = 6.0
 	tab.add_theme_stylebox_override("normal", box)
-	tab.add_theme_color_override("font_color", Color("1c3a12"))
+	tab.add_theme_color_override("font_color", Color("1c3a12") if i == _index else Color("eaf7dd"))
 	tab.add_theme_color_override("font_hover_color", Color("102009"))
 
 
@@ -256,81 +293,126 @@ func _stats_text(data: Dictionary) -> String:
 		health, _bar(health, 120.0)]
 
 
-func _zones_text(sid: String) -> String:
+## Helpers have no combat stat block, so their entry shows reef work instead —
+## the same shape of block, so both kinds of entry read the same way.
+func _helper_stats_text(data: Dictionary) -> String:
+	var rate := float(data.get("restore_rate", 0.0))
+	return "REEF WORK\n  ROLE        %s\n  RESTORE     +%.2f / s  %s\n  DIET        invasive growth\n  HARM TO YOU none  %s\n  HABITAT     %s" % [
+		String(data.get("role", "HELPER")),
+		rate, _bar(rate, 1.5),
+		_bar(0.0, 1.0),
+		SpeciesDB.zone_label(String(data.get("home_zone", "open_water")))]
+
+
+## Where a species can be met — one row per island — annotated with whether that
+## island's reef has actually been restored, so the book doubles as a progress
+## board for the restoration component.
+func _zones_text(sid: String, friendly: bool) -> String:
 	var rows := SpeciesDB.spawn_rows(sid)
 	if rows.is_empty():
 		return "SPAWN ZONES\n  not yet observed"
-	var out := "SPAWN ZONES"
+	var out := "REEF SITES — every dive" if friendly else "SPAWN ZONES"
 	for row: Dictionary in rows:
+		var island := String(row["island"])
 		var others: Array = row.get("others", [])
-		out += "\n  %s — home: %s" % [String(row["island"]).capitalize(), row["home"]]
+		out += "\n  %s — home: %s %s" % [island.capitalize(), row["home"],
+				"✓ RESTORED" if GameProgress.is_reef_restored(island) else ""]
 		if not others.is_empty():
-			out += "\n     also seen in: %s" % ", ".join(others)
+			out += "\n     also in: %s" % ", ".join(others)
 	return out
 
 
 # ================================================================ LAYOUT
 
+## The book owns its rect. Anchors alone left this node 0x0 when it was added to
+## a parent that had already laid itself out, which silently killed the whole
+## _draw() path — so position and size are set here, every layout pass.
 func _layout() -> void:
 	var view := get_viewport_rect().size
-	if view.x < 10.0 or view.y < 10.0:
+	if view.x < 200.0 or view.y < 160.0:
 		return
+	if absf(size.x - view.x) > 0.5 or absf(size.y - view.y) > 0.5:
+		size = view
+	if position != Vector2.ZERO:
+		position = Vector2.ZERO
+
+	var tabs_height := TAB_SIZE.y * 2.0 + 10.0
 	var mx := view.x * 0.045
-	var my := view.y * 0.075
-	_book = Rect2(Vector2(mx, my), Vector2(view.x - mx * 2.0, view.y - my * 2.0))
-	var pages := _book.grow(-COVER_EDGE)
-	pages.size.y -= 6.0
-	var half := (pages.size.x - SPINE) * 0.5
-	_left_page = Rect2(pages.position, Vector2(half, pages.size.y))
-	_right_page = Rect2(pages.position + Vector2(half + SPINE, 0.0), Vector2(half, pages.size.y))
+	var my := view.y * 0.055
+	_book = Rect2(Vector2(mx, my), Vector2(view.x - mx * 2.0, view.y - my * 2.0 - tabs_height))
+	_pages = _book.grow(-COVER_EDGE)
+	_pages.size.y -= 8.0
+	var half := (_pages.size.x - SPINE) * 0.5
+	_left_page = Rect2(_pages.position, Vector2(half, _pages.size.y))
+	_right_page = Rect2(_pages.position + Vector2(half + SPINE, 0.0), Vector2(half, _pages.size.y))
 
-	var pad := 26.0
-	# ---- left page: name, meta, portrait, blurb
-	_name_label.position = _left_page.position + Vector2(pad, pad)
+	var pad := 24.0
+	# ---- left page: name, meta, portrait, blurb, and the long field note
+	_name_label.position = _left_page.position + Vector2(pad, pad - 4.0)
 	_name_label.size = Vector2(_left_page.size.x - pad * 2.0, 40.0)
-	_meta_label.position = _left_page.position + Vector2(pad, pad + 40.0)
+	_meta_label.position = _left_page.position + Vector2(pad, pad + 38.0)
 	_meta_label.size = Vector2(_left_page.size.x - pad * 2.0, 26.0)
-	_portrait = Rect2(_left_page.position + Vector2(pad, pad + 78.0),
-			Vector2(_left_page.size.x - pad * 2.0, _left_page.size.y - pad * 2.0 - 78.0))
-	_blurb_label.position = _portrait.position + Vector2(0.0, _portrait.size.y + 6.0)
-	_blurb_label.size = Vector2(_portrait.size.x, 64.0)
+	var plate_top := pad + 70.0
+	var plate_h := clampf(_left_page.size.y * 0.40, 120.0, 230.0)
+	_portrait = Rect2(_left_page.position + Vector2(pad, plate_top),
+			Vector2(_left_page.size.x - pad * 2.0, plate_h))
+	_blurb_label.position = _portrait.position + Vector2(0.0, _portrait.size.y + 8.0)
+	_blurb_label.size = Vector2(_portrait.size.x, 52.0)
+	_helper_caption.position = _blurb_label.position + Vector2(0.0, 54.0)
+	_helper_caption.size = Vector2(_portrait.size.x, 20.0)
+	_lore_label.position = _blurb_label.position + Vector2(0.0, 78.0)
+	_lore_label.size = Vector2(_portrait.size.x,
+			_left_page.end.y - _lore_label.position.y - pad)
 
-	# ---- right page: stats, weakness, zones, lore
-	var rp := _right_page.position + Vector2(pad, pad)
+	# ---- right page: log, stat block, weakness, zones, footer
+	var rp := _right_page.position + Vector2(pad, pad - 4.0)
 	var rw := _right_page.size.x - pad * 2.0
 	_progress_label.position = rp
 	_progress_label.size = Vector2(rw, 20.0)
 	_stats_label.position = rp + Vector2(0.0, 26.0)
-	_stats_label.size = Vector2(rw, 130.0)
-	_weak_label.position = rp + Vector2(0.0, 162.0)
-	_weak_label.size = Vector2(rw, 72.0)
-	_zone_label.position = rp + Vector2(0.0, 240.0)
-	_zone_label.size = Vector2(rw, 130.0)
-	_lore_label.position = rp + Vector2(0.0, 378.0)
-	_lore_label.size = Vector2(rw, _right_page.size.y - 378.0 - pad)
+	_stats_label.size = Vector2(rw, 140.0)
+	_weak_label.position = rp + Vector2(0.0, 172.0)
+	_weak_label.size = Vector2(rw, 62.0)
+	_zone_label.position = rp + Vector2(0.0, 238.0)
+	_zone_label.size = Vector2(rw, 150.0)
+	_footer_label.position = Vector2(_right_page.position.x + pad, _right_page.end.y - pad - 6.0)
+	_footer_label.size = Vector2(rw, 20.0)
 
-	# ---- bookmark tabs along the bottom centre of the cover
-	var count := _tabs.size()
+	# ---- bookmark tabs, hanging off the bottom edge of the cover in two rows:
+	#      invaders first, reef helpers under them
+	var invaders := SpeciesDB.ORDER.size()
+	_place_tab_row(0, invaders, 0, view)
+	_place_tab_row(invaders, _tabs.size() - invaders, 1, view)
+
+	# Page turners sit inside the cover band, so a full-width book never pushes
+	# them off the screen edge.
+	var arrow_y := _pages.position.y + _pages.size.y * 0.5 - _prev_button.size.y * 0.5
+	_prev_button.position = Vector2(_book.position.x + 3.0, arrow_y)
+	_next_button.position = Vector2(_book.end.x - _next_button.size.x - 3.0, arrow_y)
+	_close_button.position = Vector2(view.x - 158.0, 16.0)
+
+
+func _place_tab_row(from: int, count: int, row: int, view: Vector2) -> void:
+	if count <= 0:
+		return
 	var total := float(count) * TAB_SIZE.x
-	var start := Vector2(_book.position.x + (_book.size.x - total) * 0.5,
-			_book.end.y - TAB_SIZE.y - 4.0)
+	var start := Vector2(view.x * 0.5 - total * 0.5,
+			_book.end.y + 6.0 + float(row) * (TAB_SIZE.y + 4.0))
 	for i in count:
-		_tabs[i].position = start + Vector2(float(i) * TAB_SIZE.x, 0.0)
-		_tabs[i].size = TAB_SIZE
-
-	# ---- page turn + close
-	_prev_button.position = Vector2(_book.position.x - 52.0, _book.position.y + _book.size.y * 0.5)
-	_next_button.position = Vector2(_book.end.x + 8.0, _book.position.y + _book.size.y * 0.5)
-	_close_button.position = Vector2(view.x - 158.0, 18.0)
+		var tab := _tabs[from + i]
+		tab.position = start + Vector2(float(i) * TAB_SIZE.x, 0.0)
+		tab.size = TAB_SIZE
 
 
 # ================================================================ DRAW
 
 func _draw() -> void:
 	var view := size
-	if view.x < 10.0 or view.y < 10.0:
+	if view.x < 200.0 or view.y < 160.0:
 		return
-	draw_rect(Rect2(Vector2.ZERO, view), Color(BG, 0.96), true)
+	# Opaque, full-screen: the map behind the book must not read through it.
+	draw_rect(Rect2(Vector2.ZERO, view), BG, true)
+	draw_rect(Rect2(Vector2.ZERO, view), Color(0.05, 0.16, 0.22, 0.35), true)
 	_draw_ornament(Vector2(view.x * 0.5, _book.position.y - 18.0))
 	_draw_cover()
 	_draw_pages()
@@ -355,7 +437,6 @@ func _draw_cover() -> void:
 	var cover := _rounded(_book, 14.0)
 	draw_colored_polygon(cover, COVER)
 	draw_polyline(_ring(cover), COVER_DARK, 3.0, true)
-	# inner bevel
 	var bevel := _rounded(_book.grow(-7.0), 12.0)
 	draw_polyline(_ring(bevel), Color(COVER_LIGHT, 0.35), 2.0, true)
 
@@ -377,7 +458,6 @@ func _draw_cover() -> void:
 			draw_colored_polygon(lobe, COVER if i % 2 == 0 else COVER.darkened(0.12))
 			draw_colored_polygon(_grow(lobe, -r * 0.34), Color(COVER_LIGHT, 0.85))
 			draw_polyline(_ring(lobe), COVER_DARK, 1.6, true)
-		# a few seaweed tendrils trailing inward
 		for i in range(3):
 			var tip := corner + Vector2(
 				(1.0 if corner.x < _book.get_center().x else -1.0) * _rng.randf_range(40.0, 120.0),
@@ -392,12 +472,10 @@ func _draw_pages() -> void:
 		draw_colored_polygon(sheet, PAGE_BAND)
 		var inner := _rounded(page, 5.0)
 		draw_colored_polygon(inner, PAGE)
-		# soft radial wash: brighter centre, darker edges
 		for i in range(4):
 			var t := float(i) / 3.0
 			var wash := _rounded(page.grow(-6.0 - t * 10.0), 4.0)
 			draw_colored_polygon(wash, Color(PAGE_LIGHT, 0.16 * (1.0 - t)))
-		# faint irregular blotches
 		_rng.seed = int(page.position.x) * 31 + 7
 		for _b in range(16):
 			var p := Vector2(
@@ -406,7 +484,6 @@ func _draw_pages() -> void:
 			var rad := _rng.randf_range(8.0, 34.0)
 			draw_colored_polygon(_blob(p, Vector2(rad * 1.4, rad), _rng.randi(), 16),
 					Color(PAGE_SHADE, _rng.randf_range(0.10, 0.24)))
-		# brown page border band
 		draw_polyline(_ring(inner), PAGE_BAND, 2.4, true)
 		draw_polyline(_ring(_rounded(page.grow(-9.0), 3.0)), Color(PAGE_BAND, 0.5), 1.2, true)
 
@@ -420,44 +497,43 @@ func _draw_pages() -> void:
 		var alpha := 0.30 * (1.0 - t)
 		draw_rect(Rect2(gutter_x + w * 0.5, top, w, height), Color(0.35, 0.26, 0.14, alpha), true)
 		draw_rect(Rect2(gutter_x - w * 1.5, top, w, height), Color(0.35, 0.26, 0.14, alpha), true)
-	draw_line(Vector2(gutter_x, top - 6.0), Vector2(gutter_x, top + height + 6.0), Color(0.30, 0.21, 0.11, 0.55), 2.0)
+	draw_line(Vector2(gutter_x, top - 6.0), Vector2(gutter_x, top + height + 6.0),
+			Color(0.30, 0.21, 0.11, 0.55), 2.0)
 
 
-## Portrait plate on the left page: the species' own shape from SpeciesDB, or a
-## flat silhouette with ??? when it has not been met yet.
+## Portrait plate on the left page. Invaders keep the six silhouettes the enemy
+## draws; reef helpers reuse the very art the creature swims with
+## (scenes/levels/reef_art.gd), so the book shows the animal, not an impression.
 func _draw_portrait() -> void:
-	if _portrait.size.x < 40.0 or _portrait.size.y < 40.0:
+	if _portrait.size.x < 40.0 or _portrait.size.y < 40.0 or _ids.is_empty():
 		return
+	var sid := _ids[_index]
+	var friendly := SpeciesDB.is_friendly(sid)
+	var data := SpeciesDB.get_species_any(sid)
 	var frame := _rounded(_portrait, 8.0)
 	draw_colored_polygon(frame, Color(PAGE_SHADE, 0.55))
 	draw_polyline(_ring(frame), PAGE_BAND, 2.0, true)
-	if _ids.is_empty():
-		return
-	var sid := _ids[_index]
-	var data := SpeciesDB.get_species(sid)
-	var discovered := GameProgress.has_seen_species(sid)
-	var centre := _portrait.get_center() - Vector2(0.0, 14.0)
-	var radius := minf(_portrait.size.x, _portrait.size.y) * 0.30
+	var centre := _portrait.get_center()
+	var radius := minf(_portrait.size.x * 0.30, _portrait.size.y * 0.34)
 	var tint: Color = data.get("tint", Color("4fb4e8"))
 	var accent: Color = data.get("accent", Color.WHITE)
-	if discovered:
-		# faint habitat disc so the portrait reads as a plate, not a blob
-		draw_circle(centre, radius * 1.9, Color(PAGE_SHADE, 0.35))
-		_draw_shape(String(data.get("shape", "jelly")), centre, radius, tint, accent)
-		_draw_trait_marks(data, centre + Vector2(0.0, radius * 1.9))
+	# habitat disc so the portrait reads as a plate, not a floating blob
+	var disc := Color(0.26, 0.42, 0.40, 0.30) if friendly else Color(PAGE_SHADE, 0.35)
+	draw_circle(centre, radius * 1.7, disc)
+	if friendly:
+		for i in range(3):
+			var a := _time * 0.25 + TAU * float(i) / 3.0
+			draw_circle(centre + Vector2(cos(a), sin(a)) * radius * 1.5,
+					maxf(2.0, radius * 0.06), Color(tint, 0.55))
+		ReefArt.draw_creature(self, String(data.get("shape", "parrotfish")), centre, radius,
+				tint, accent, _time * 0.6, 0.0)
 	else:
-		draw_circle(centre, radius * 1.9, Color(0.22, 0.20, 0.16, 0.35))
-		_draw_shape(String(data.get("shape", "jelly")), centre, radius, Color(0.16, 0.15, 0.13),
-				Color(0.26, 0.24, 0.20))
-		var font := ThemeDB.fallback_font
-		var text := "???"
-		var width := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 40).x
-		draw_string(font, centre + Vector2(-width * 0.5, 14.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 40,
-				Color(0.75, 0.72, 0.62, 0.85))
+		_draw_shape(String(data.get("shape", "jelly")), centre, radius, tint, accent)
+	_draw_trait_marks(data, centre + Vector2(0.0, radius * 1.7), friendly)
 
 
-## One silhouette per species shape — the same six shapes the enemy draws, so the
-## book is recognisably showing the creature the player actually met.
+## One silhouette per invasive species shape — the same shapes the enemy draws,
+## so the book is recognisably showing the creature the player actually met.
 func _draw_shape(shape: String, c: Vector2, r: float, tint: Color, accent: Color) -> void:
 	match shape:
 		"urchin":
@@ -498,7 +574,6 @@ func _draw_shape(shape: String, c: Vector2, r: float, tint: Color, accent: Color
 						accent, 3.0, true)
 			draw_circle(c, r * 0.4, tint.darkened(0.3))
 		_:
-			# drifter jelly: bell + tendrils
 			var bell := PackedVector2Array()
 			for i in range(21):
 				var a := PI + PI * float(i) / 20.0
@@ -514,11 +589,21 @@ func _draw_shape(shape: String, c: Vector2, r: float, tint: Color, accent: Color
 						c + Vector2(cos(a) * r * 0.7, r * 1.5), Color(accent, 0.7), 2.0, true)
 
 
-## Threat pips and the weakness tag, stamped under the portrait.
-func _draw_trait_marks(data: Dictionary, at: Vector2) -> void:
+## Threat pips (or a green "helper" rosette) plus the counter-weapon tag stamped
+## under the portrait.
+func _draw_trait_marks(data: Dictionary, at: Vector2, friendly: bool) -> void:
+	var font := ThemeDB.fallback_font
+	if friendly:
+		for i in range(6):
+			var a := TAU * float(i) / 6.0 + _time * 0.2
+			draw_circle(at + Vector2(cos(a), sin(a) * 0.7) * 7.0, 3.4, Color(HELPER_INK, 0.85))
+		var text := "REEF HELPER — %s" % String(data.get("role", "HELPER"))
+		var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x
+		draw_string(font, at + Vector2(-w * 0.5, 30.0), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 15,
+				HELPER_INK)
+		return
 	var threat := int(data.get("threat", 1))
 	var col: Color = THREAT_COLOUR[clampi(threat - 1, 0, THREAT_COLOUR.size() - 1)]
-	var font := ThemeDB.fallback_font
 	for i in 3:
 		var centre := at + Vector2(float(i) * 22.0 - 22.0, 0.0)
 		if i < threat:

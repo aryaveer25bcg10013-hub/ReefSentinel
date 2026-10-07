@@ -28,6 +28,14 @@ const SPAWN_JITTER := 26.0
 # Keeps a jittered spawn at least as far from the arena centre as the floor's
 # own spawn rule (reef_floor.SPAWN_MIN_CENTRE_DIST).
 const SPAWN_MIN_CENTRE_DIST := 340.0
+# The centre band above only means "away from the player" while the player is in
+# the middle. The sentinel is free to leave — it parks over a coral bed to plant
+# coral after a wave — so distance from the *player* gets its own rule, the same
+# 340 px band measured from them instead of from the arena centre.
+const SPAWN_MIN_PLAYER_DIST := 340.0
+# How many times a spawn point is re-rolled before giving up and taking the far
+# side of the ring. Cheap: a zone pool holds ZONE_POOL_SIZE validated points.
+const SPAWN_PLAYER_RETRIES := 6
 
 @export var reef_id := "redwake"
 @export var enemy_scene: PackedScene
@@ -201,7 +209,7 @@ func species_roster() -> Dictionary:
 
 
 ## Additive: per-zone spawn tallies ({zone_id: {species_id: count}}), used by the
-## spawn audit and the bestiary's "where it shows up" hints.
+## spawn audit and the guidebook's "where it shows up" hints.
 func spawn_zone_report() -> Dictionary:
 	return _spawn_zone_report.duplicate(true)
 
@@ -298,7 +306,8 @@ func _point_in_zone(zone_id: String) -> Vector2:
 	return _spawn_position()
 
 
-## Wave spawn position: zone first (weighted by species), point second.
+## Wave spawn position: zone first (weighted by species), point second. Both
+## routes pass the player rule, so a wave cannot arrive on top of the sentinel.
 func _spawn_position_for(species_id: String) -> Vector2:
 	var zone_id := _next_zone_for(species_id)
 	if zone_id == "":
@@ -306,7 +315,7 @@ func _spawn_position_for(species_id: String) -> Vector2:
 	var entry: Dictionary = _spawn_zone_report.get(zone_id, {})
 	entry[species_id] = int(entry.get(species_id, 0)) + 1
 	_spawn_zone_report[zone_id] = entry
-	return _point_in_zone(zone_id)
+	return _fair_zone_point(zone_id)
 
 
 ## B's original spawn was player position + a random angle * spawn_radius (520).
@@ -315,15 +324,72 @@ func _spawn_position_for(species_id: String) -> Vector2:
 ## soft-lock. Use the floor's designed spawn points when the level supplied them,
 ## and clamp the fallback ring into the arena either way.
 func _spawn_position() -> Vector2:
+	for _attempt in range(SPAWN_PLAYER_RETRIES):
+		var candidate := _candidate_spawn_position()
+		if _clear_of_player(candidate):
+			return candidate
+	# Every candidate came up short: give the wave the far side of the ring.
+	return _farthest_ring_point()
+
+
+## One unfiltered attempt: the level's designed points when it supplied them,
+## else B's original player-relative ring (clamped inside the walls).
+func _candidate_spawn_position() -> Vector2:
 	if not _spawn_points.is_empty():
 		var point: Vector2 = _spawn_points[_point_cursor % _spawn_points.size()]
 		_point_cursor += 1
 		return _safe_jitter(point)
 	var origin := Vector2.ZERO
-	var player := get_tree().get_first_node_in_group("player") as Node2D
+	var player := _player_node()
 	if player != null:
 		origin = player.global_position
 	return _clamp_to_arena(origin + Vector2.from_angle(randf() * TAU) * spawn_radius)
+
+
+## The sentinel, or null when there is none (headless tools, unit tests).
+func _player_node() -> Node2D:
+	var node := get_tree().get_first_node_in_group("player")
+	return node as Node2D if node is Node2D else null
+
+
+## The player rule: at least SPAWN_MIN_PLAYER_DIST from the sentinel. A level
+## with no player is not a level with a player in the way, so that passes.
+func _clear_of_player(p: Vector2) -> bool:
+	var player := _player_node()
+	if player == null:
+		return true
+	return p.distance_to(player.global_position) >= SPAWN_MIN_PLAYER_DIST
+
+
+## A zone's own point, but fair to the player. _point_in_zone() walks the zone's
+## validated pool one point per call, so re-rolling really does try somewhere
+## else. If the whole zone is out (the sentinel is standing in it), any safe
+## point will do — the species arrives from the wrong neighbourhood, not late.
+func _fair_zone_point(zone_id: String) -> Vector2:
+	for _attempt in range(SPAWN_PLAYER_RETRIES):
+		var point := _point_in_zone(zone_id)
+		if _clear_of_player(point):
+			return point
+	return _spawn_position()
+
+
+## Last resort, when even the level's own points were all too close (a cramped
+## arena, or the sentinel mid-arena): the ring point they are farthest from.
+func _farthest_ring_point() -> Vector2:
+	var player := _player_node()
+	var best := _clamp_to_arena(_arena * 0.5 - Vector2(0.0, SPAWN_MIN_CENTRE_DIST))
+	if player == null:
+		return best
+	var best_dist := -1.0
+	for i in range(12):
+		var a := TAU * float(i) / 12.0
+		var p := _clamp_to_arena(_arena * 0.5
+				+ Vector2(cos(a), sin(a)) * minf(_arena.x, _arena.y) * 0.44)
+		var d := p.distance_to(player.global_position)
+		if d > best_dist:
+			best_dist = d
+			best = p
+	return best
 
 
 ## Jitter must never break the spawn guarantees: a jittered point is only kept

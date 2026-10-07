@@ -17,3 +17,6 @@ genome_heat_sink = 0.35
 genome_speed_multiplier = 1.12
 genome_max_health = 70.0
 enemy_touch_damage = 10.0
+reef_start_health = 30.0
+reef_site_count = 4
+friendly_count = 3

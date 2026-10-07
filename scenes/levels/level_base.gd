@@ -1,8 +1,10 @@
 extends Node2D
 # C owns this file — the shared controller for one dive level (one reef island).
 #
-# Owns: the reef floor, arena walls, player spawn, camera, wave flow, HUD, and
-# the hand-off back to the world map. Everything it touches from other roles
+# Owns: the reef floor, arena walls, the coral beds and their helpers, player
+# spawn, camera, wave flow, HUD, and the hand-off back to the world map. Every
+# number below is level design; the genome maths stays where it belongs.
+# Everything it touches from other roles
 # goes through the frozen contract, so it keeps working as A and B land their
 # real scenes:
 #
@@ -28,10 +30,15 @@ const PLACEHOLDER_ENEMY_SCRIPT := "res://scenes/levels/placeholders/reef_placeho
 const PLACEHOLDER_WAVES_SCRIPT := "res://scenes/levels/placeholders/reef_placeholder_waves.gd"
 const HUD_SCRIPT := "res://scenes/ui/level_hud.gd"
 const WORLD_MAP_SCENE := "res://scenes/ui/world_map.tscn"
+const REEF_SITE_SCRIPT := "res://scenes/levels/reef_site.gd"
+const FRIENDLY_SCRIPT := "res://scenes/levels/friendly_creature.gd"
 const SpeciesDB := preload("res://systems/species_db.gd")
+const ReefRestoration := preload("res://systems/reef_restoration.gd")
 
 const ARENA_SIZE := Vector2(1600, 900)
 const WALL_THICKNESS := 40.0
+## W9: bound in project.godot (E). level_base is the only reader.
+const SEED_ACTION := "reef_seed"
 
 # W3: which weapon counter-trait each resistance trait feeds, for the
 # between-wave adaptation panel. Display strings only — the maths stays in
@@ -67,6 +74,18 @@ const TRAIT_WEAPON := {
 @export var genome_speed_multiplier: float = 0.90
 @export var genome_max_health: float = 40.0
 @export var enemy_touch_damage: float = 8.0
+# W8: the coral. Each island starts further gone than the last, so restoring a
+# late reef is a real fight. Every number here is level design, not genome logic.
+@export var reef_start_health: float = 45.0
+@export var reef_site_count: int = 3
+@export var friendly_count: int = 3
+## Health handed back to the hull the first time a reef is brought back.
+@export var reef_reward_repair: int = 25
+## W9 planting: how close you must be, how long you must hold, and how many
+## plantings a bed accepts per wave (the wave scatters the fragments you carry).
+@export var seed_range: float = 130.0
+@export var seed_time: float = 1.6
+@export var seed_per_bed_per_wave: int = 1
 
 var _seed := 4242
 var _arena := ARENA_SIZE
@@ -76,6 +95,20 @@ var _camera: Camera2D
 var _director: Node
 var _hud: CanvasLayer
 var _completed := false
+# W8: the restoration component — one pure-logic system plus the things it drives.
+var _reef: ReefRestoration
+var _sites: Array[Node2D] = []
+var _helpers: Array[Node2D] = []
+var _last_alive := 0
+var _reef_rewarded := false
+var _reef_reported := false
+# W9 planting action state
+var _seed_target: Node2D = null
+var _seed_hold := 0.0
+var _planted_this_wave := {}   # reef_index -> plantings taken this wave
+# W9: is the swarm actually beaten, or is this just a gap between spawns? The
+# spawner empties the water between two arrivals, and that gap is not a lull.
+var _wave_done := false
 
 
 var _seen_species: Array[String] = []
@@ -86,6 +119,7 @@ func _ready() -> void:
 	_build_floor()
 	_build_walls()
 	_build_obstacles()
+	_build_reef()
 	_build_player()
 	_build_waves()
 	_build_hud()
@@ -158,6 +192,86 @@ func _build_walls() -> void:
 		body.add_child(shape)
 
 
+# ================================================================ REEF (W8)
+
+## The coral beds and the animals that work them.
+##
+## Sites are placed on the floor's own legal spawn points — the same clearance
+## rule the wave manager obeys — so a coral bed can never end up inside a rock
+## or on top of the player's start position. One helper of each species is then
+## paired to a site, so every bed has something looking after it.
+func _build_reef() -> void:
+	_reef = ReefRestoration.new()
+	_reef.configure(reef_start_health)
+
+	var anchors := _reef_anchors()
+	if anchors.is_empty():
+		return
+	var site_size := clampf(minf(_arena.x, _arena.y) * 0.13, 90.0, 170.0)
+	for i in anchors.size():
+		var site := Node2D.new()
+		if not _apply_script(site, REEF_SITE_SCRIPT):
+			return
+		site.call("configure", i, anchors[i], site_size, _seed + 11 * (i + 1))
+		add_child(site)
+		site.call("set_health_ratio", _reef.ratio())
+		_sites.append(site)
+
+	if not ResourceLoader.exists(FRIENDLY_SCRIPT):
+		return
+	for i in friendly_count:
+		var sid: String = SpeciesDB.FRIENDLY_ORDER[i % SpeciesDB.FRIENDLY_ORDER.size()]
+		var site := _sites[i % _sites.size()]
+		var helper := Node2D.new()
+		if not _apply_script(helper, FRIENDLY_SCRIPT):
+			return
+		helper.call("configure", sid, site.call("centre"),
+				float(site.get("radius")) * 0.85, _seed + 37 * (i + 1))
+		add_child(helper)
+		_helpers.append(helper)
+		# Meeting a helper records it in the guidebook, exactly like an invader —
+		# the book should fill in from the water, not from a lookup table.
+		GameProgress.mark_species_seen(sid)
+
+
+## Where the coral beds sit: legal floor positions, spread around the arena and
+## never stacked on each other.
+func _reef_anchors() -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	var wanted := clampi(reef_site_count, 1, 4)
+	if _floor != null and _floor.has_method("spawn_points"):
+		var points: Array = _floor.call("spawn_points", wanted * 3, _seed + 91)
+		for p: Vector2 in points:
+			if p.distance_to(_arena * 0.5) < 200.0:
+				continue
+			var clear := true
+			for taken: Vector2 in out:
+				if taken.distance_to(p) < 380.0:
+					clear = false
+					break
+			if clear:
+				out.append(p)
+			if out.size() >= wanted:
+				break
+	# Ring fallback so a reef always exists, however the floor behaved.
+	var guard := 12
+	while out.size() < wanted and guard > 0:
+		guard -= 1
+		var a := TAU * float(out.size()) / float(wanted) + 0.6
+		out.append(_arena * 0.5 + Vector2(cos(a), sin(a)) * minf(_arena.x, _arena.y) * 0.31)
+	return out
+
+
+## Total restore rate of every helper still working (systems/reef_restoration.gd
+## applies its own scaling and the bleached-reef penalty on top of this).
+func _helper_power() -> float:
+	var total := 0.0
+	for helper: Node2D in _helpers:
+		if is_instance_valid(helper) and helper.has_method("restore_power"):
+			total += float(helper.call("restore_power"))
+	return total
+
+
 # ================================================================ PLAYER
 
 func _build_player() -> void:
@@ -221,6 +335,10 @@ func _build_waves() -> void:
 		director.connect("wave_completed", _on_wave_completed)
 	if director.has_signal("reef_cleared"):
 		director.connect("reef_cleared", _on_reef_cleared)
+	# A director with no wave_completed leaves no way to tell a lull from the
+	# start of the dive, so fall back to the older "water is clear" rule rather
+	# than locking the planting action out altogether.
+	_wave_done = not director.has_signal("wave_completed")
 
 	var points := _spawn_points()
 	var genome := _genome_template()
@@ -325,6 +443,10 @@ func _build_hud() -> void:
 		hud.call("set_wave", 1, wave_count)
 	if hud.has_method("bind_player"):
 		hud.call("bind_player", _player)
+	# W8: the reef meter is drawn against the island's starting health, so the
+	# player can see how much of the reef they have brought back.
+	if _reef != null and hud.has_method("set_reef_start"):
+		hud.call("set_reef_start", _reef.configured_start_ratio())
 	if _player != null and _player.has_signal("died"):
 		_player.connect("died", _on_player_died)
 
@@ -339,13 +461,18 @@ func _on_player_died() -> void:
 # ================================================================ FLOW
 
 func _on_wave_started(wave_number: int) -> void:
+	_wave_done = false
 	if _hud != null and _hud.has_method("set_wave"):
 		_hud.call("set_wave", wave_number, wave_count)
+	# W9: fresh fragments for a fresh wave, so every lull is another chance to
+	# plant. The beds remember nothing between waves except the coral itself.
+	_planted_this_wave.clear()
+	_seed_hold = 0.0
 	_announce_new_species()
 
 
 ## W3/W6: the first time an island puts a species in the water, tell the player
-## and record it for the bestiary.
+## and record it for the guidebook.
 func _announce_new_species() -> void:
 	if _director == null or not _director.has_method("species_roster"):
 		return
@@ -372,6 +499,7 @@ func threat_of(species_id: String) -> int:
 ## W3: between waves, show what the swarm just evolved and what it means for the
 ## weapon the player is holding. All numbers come from the wave manager.
 func _on_wave_completed(_wave_number: int) -> void:
+	_wave_done = true
 	if _hud == null or _director == null or not _hud.has_method("show_adaptation"):
 		return
 	var lines: Array[String] = []
@@ -426,6 +554,162 @@ func _current_weapon_id() -> String:
 	return String(weapon)
 
 
+## W8: one frame of the restoration component. The reef is drained by whatever
+## is alive in the water, healed by the helpers and healed again by every kill
+## (read from the live population, so no enemy code has to know about this).
+func _tick_reef(delta: float) -> void:
+	if _reef == null:
+		return
+	var alive := get_tree().get_nodes_in_group("invasive").size()
+	var event := _reef.tick(delta, alive, _helper_power())
+	# A drop in the live population is a confirmed kill: hand the reef its lump.
+	if alive < _last_alive:
+		for _killed in range(_last_alive - alive):
+			var kill_event := _reef.add_kill()
+			if kill_event != "":
+				event = kill_event
+	_last_alive = alive
+
+	for site: Node2D in _sites:
+		if is_instance_valid(site):
+			site.call("set_health_ratio", _reef.ratio())
+	for helper: Node2D in _helpers:
+		if is_instance_valid(helper):
+			helper.call("set_reef_ratio", _reef.ratio())
+
+	if event == "restored":
+		_on_reef_restored()
+	elif event == "bleached" and not _reef_reported and _hud != null and _hud.has_method("show_reef"):
+		_reef_reported = true
+		_hud.call("show_reef", "REEF BLEACHED", _reef.advice_text(), _reef.state_colour())
+
+	if _hud != null and _hud.has_method("set_reef"):
+		_hud.call("set_reef", _reef.ratio(), _reef.state_label(), _reef.health_text(),
+				_reef.state_colour())
+
+
+## Reaching full health is a reward, not a passive bar: repaired hull for the
+## sentinel that did the work, and the island is written into the guidebook.
+func _on_reef_restored() -> void:
+	if _reef_rewarded:
+		return
+	_reef_rewarded = true
+	if _player != null and _player.has_method("repair"):
+		_player.call("repair", reef_reward_repair)
+	else:
+		# Say so rather than failing silently on a rig without the additive API.
+		push_warning("Player has no repair(); reef reward could not repair the hull")
+	if _hud != null and _hud.has_method("show_reef"):
+		_hud.call("show_reef", "REEF RESTORED", _reef.advice_text(), _reef.state_colour())
+
+
+## W9: THE PLANTING ACTION.
+##
+## After a wave is dead the water is clear, and only then can the sentinel settle
+## over a coral bed and plant coral by hand. Hold the key, stay in range, and the
+## bed grows a real new head (scenes/levels/reef_site.gd) worth more reef health
+## than any kill. Four things keep it a decision instead of a free win: it needs a
+## beaten wave (not merely an empty screen — see _wave_done), it takes time you
+## could be swimming, it needs you at a bed, and a bed takes one planting per wave
+## — the swarm scatters the fragments you are carrying, so they come back with the
+## next wave.
+func _tick_seeding(delta: float) -> void:
+	if _completed or _sites.is_empty():
+		_seed_target = null
+		_seed_hold = 0.0
+		_clear_plant_states(null)
+		_show_seed_prompt("", 0.0)
+		return
+
+	# "after defeating the swarm" is literally the gate: the wave has to be over,
+	# and the last of it has to be off the screen. Both halves matter — the swarm
+	# is only really beaten when the spawner has stopped AND the water is empty.
+	var clear_water := _wave_done and get_tree().get_nodes_in_group("invasive").is_empty()
+	_seed_target = _nearest_plantable_bed() if clear_water else null
+	if _seed_target == null:
+		_seed_hold = 0.0
+		_clear_plant_states(null)
+		_show_seed_prompt("", 0.0)
+		return
+
+	var bed := int(_seed_target.get("reef_index"))
+	if int(_planted_this_wave.get(bed, 0)) >= seed_per_bed_per_wave:
+		_seed_hold = 0.0
+		_seed_target.call("set_plant_state", true, false, 0.0)
+		_show_seed_prompt("THIS BED IS PLANTED — fragments regrow next wave", 0.0)
+		return
+
+	var planting := false
+	var progress := 0.0
+	if Input.is_action_pressed(SEED_ACTION):
+		_seed_hold += delta
+		planting = true
+		progress = clampf(_seed_hold / maxf(0.05, seed_time), 0.0, 1.0)
+		if _seed_hold >= seed_time:
+			_seed_hold = 0.0
+			planting = false
+			progress = 0.0
+			_plant_bed(_seed_target)
+	else:
+		_seed_hold = 0.0
+
+	_clear_plant_states(_seed_target)
+	_seed_target.call("set_plant_state", true, planting, progress)
+	if planting:
+		_show_seed_prompt("PLANTING CORAL", progress)
+	else:
+		_show_seed_prompt("HOLD  %s  TO PLANT CORAL" % _seed_key_hint(), 0.0)
+
+
+## The bed the sentinel is standing over, if it will still take a planting.
+func _nearest_plantable_bed() -> Node2D:
+	var best: Node2D = null
+	var best_dist := seed_range
+	var here := _player.global_position if is_instance_valid(_player) else _arena * 0.5
+	for site: Node2D in _sites:
+		if not is_instance_valid(site):
+			continue
+		var d: float = here.distance_to(site.call("centre")) - float(site.get("radius"))
+		if d <= best_dist:
+			best_dist = d
+			best = site
+	return best
+
+
+func _clear_plant_states(except: Node2D) -> void:
+	for site: Node2D in _sites:
+		if is_instance_valid(site) and site != except:
+			site.call("set_plant_state", false, false, 0.0)
+
+
+func _plant_bed(site: Node2D) -> void:
+	var bed := int(site.get("reef_index"))
+	_planted_this_wave[bed] = int(_planted_this_wave.get(bed, 0)) + 1
+	var planted := int(site.call("plant"))
+	var event := _reef.seed_planted() if _reef != null else ""
+	if event == "restored":
+		_on_reef_restored()
+	if _hud != null and _hud.has_method("show_seed_result"):
+		_hud.call("show_seed_result", planted, ReefRestoration.SEED_RESTORE)
+
+
+## The key is read from the input map rather than hard-coded in the prompt, so a
+## rebind cannot leave the HUD lying about it.
+func _seed_key_hint() -> String:
+	var events := InputMap.action_get_events(SEED_ACTION)
+	if events.is_empty():
+		return "E"
+	var event := events[0]
+	if event is InputEventKey:
+		return OS.get_keycode_string((event as InputEventKey).physical_keycode)
+	return String((event as InputEvent).as_text())
+
+
+func _show_seed_prompt(text: String, progress: float) -> void:
+	if _hud != null and _hud.has_method("show_seed_prompt"):
+		_hud.call("show_seed_prompt", text, progress)
+
+
 func _on_reef_cleared(reef_id: String) -> void:
 	if _completed:
 		return
@@ -433,6 +717,10 @@ func _on_reef_cleared(reef_id: String) -> void:
 	if reef_id == "":
 		reef_id = island_id
 	GameProgress.mark_island_cleared(reef_id)
+	# W8: the dive is only credited with saving the reef when the coral actually
+	# came back; a bleached reef is cleared water, not a saved island.
+	if _reef != null and _reef.earned_restoration():
+		GameProgress.mark_reef_restored(island_id)
 	if _hud != null and _hud.has_method("show_cleared"):
 		_hud.call("show_cleared", island_name, _next_island_name(reef_id))
 
@@ -468,7 +756,9 @@ func _retry() -> void:
 	get_tree().reload_current_scene()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_tick_reef(delta)
+	_tick_seeding(delta)
 	if _hud == null:
 		return
 	if _hud.has_method("set_enemies_left"):
@@ -485,12 +775,12 @@ func _process(_delta: float) -> void:
 	if _hud.has_method("set_effectiveness") and _director != null and _director.has_method("resistance_profile"):
 		var profile: Dictionary = _director.call("resistance_profile")
 		if profile.has(weapon) and float(profile[weapon]) > 0.0:
-			var delta := 0.0
+			var change := 0.0
 			if _director.has_method("generation_delta"):
 				var deltas: Dictionary = _director.call("generation_delta")
 				if deltas.has(weapon):
-					delta = float(deltas[weapon])
-			_hud.call("set_effectiveness", weapon, float(profile[weapon]), delta)
+					change = float(deltas[weapon])
+			_hud.call("set_effectiveness", weapon, float(profile[weapon]), change)
 	if _hud.has_method("set_weapon_status") and _player != null and _player.has_method("weapon_status"):
 		_hud.call("set_weapon_status", _player.call("weapon_status"))
 

@@ -182,6 +182,16 @@ func take_health_damage(amount: float) -> void:
 		died.emit()
 
 
+## Additive (W8): the reef-restoration reward. Restoring a coral bed patches the
+## hull that did the work. Deliberately additive — no frozen name or number is
+## touched, and it is the only way to regain health, so it stays a reward.
+func repair(amount: float) -> void:
+	if _is_dead or amount <= 0.0:
+		return
+	current_health = clampi(current_health + int(amount), 0, max_health)
+	health_changed.emit(current_health, max_health)
+
+
 ## Additive (W1): weapon readiness for the HUD. Read-only, never influences play.
 func weapon_status() -> Dictionary:
 	match current_weapon_id:
