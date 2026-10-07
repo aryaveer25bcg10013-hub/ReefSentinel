@@ -1,3 +1,9 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# Throwaway verification harnesses — the brief says not to commit them.
+tools/
+
+# Godot's import sidecars for documentation screenshots (not game assets).
+docs/shots/*.import

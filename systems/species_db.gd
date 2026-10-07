@@ -44,6 +44,18 @@ const ZONES := {
 const HOME_SLOTS := 7
 const FLOOR_SLOTS := 1
 
+## Canonical zone ids per island. The procedural floor builds these same zones
+## (scenes/levels/reef_floor.gd, keyed by biome) and the spawn audit asserts the
+## two agree, so the bestiary can list where a species shows up without loading
+## a level.
+const ISLAND_ZONES := {
+	"redwake": ["open_water", "coral_shelf", "sand_bar", "channel"],
+	"quiet_belt": ["open_water", "wreck_shallows", "kelp_trench", "channel"],
+	"harrow": ["open_water", "vent_field", "bone_flats", "ridge_ruins", "ash_drift"],
+	"second_watch": [],
+	"mire": [],
+}
+
 const SPECIES := {
 	"drifter_jelly": {
 		"id": "drifter_jelly",
@@ -186,6 +198,35 @@ static func get_species_for_island(island_id: String) -> Array[String]:
 
 static func zone_label(zone_id: String) -> String:
 	return String(ZONES.get(zone_id, zone_id.capitalize()))
+
+
+static func zone_ids_for_island(island_id: String) -> Array[String]:
+	var out: Array[String] = []
+	for z: String in (ISLAND_ZONES.get(island_id, []) as Array):
+		out.append(z)
+	return out
+
+
+static func home_zone_for_island(species_id: String, island_id: String) -> String:
+	return resolve_home_zone(species_id, island_id, zone_ids_for_island(island_id))
+
+
+## Where a species can be met, for the bestiary: one row per island it is part
+## of, naming its home zone and every other zone it still turns up in.
+static func spawn_rows(species_id: String) -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	var data := get_species(species_id)
+	for island: String in (data.get("islands", []) as Array):
+		var zones := zone_ids_for_island(island)
+		if zones.is_empty():
+			continue
+		var home := resolve_home_zone(species_id, island, zones)
+		var others: Array[String] = []
+		for z: String in zones:
+			if z != home:
+				others.append(zone_label(z))
+		rows.append({"island": island, "home": zone_label(home), "others": others})
+	return rows
 
 
 static func weakness_text(species_id: String) -> String:

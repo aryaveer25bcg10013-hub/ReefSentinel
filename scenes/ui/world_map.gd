@@ -3,6 +3,8 @@ extends Control
 # Every piece of map art is drawn in code: no textures, no extra scenes.
 # Tweak the CONSTANTS section; everything below it is plumbing.
 
+const BESTIARY_SCRIPT := preload("res://scenes/ui/bestiary.gd")
+
 const ISLAND_BUTTONS := {
 	"redwake": "Redwake",
 	"quiet_belt": "QuietBelt",
@@ -165,6 +167,8 @@ var _states: Array[int] = []
 var _banners: Array[Button] = []
 var _current := -1
 var _sub_pos := Vector2.ZERO
+var _bestiary: Control = null
+var _bestiary_button: Button = null
 
 
 func _ready() -> void:
@@ -202,6 +206,7 @@ func _ready() -> void:
 	_fx.draw.connect(_draw_fx)
 	$Islands.add_child(_fx)
 
+	_setup_bestiary()
 	_rebake()
 	get_viewport().size_changed.connect(_rebake)
 
@@ -310,6 +315,49 @@ func _banner_box(face: Color, edge: Color) -> StyleBoxFlat:
 	box.content_margin_bottom = 5.0
 	box.anti_aliasing = true
 	return box
+
+
+## W6b: the bestiary book, opened from the map. It is a child of this Control so
+## it simply scales with the viewport, like every other overlay here.
+func _setup_bestiary() -> void:
+	_bestiary = Control.new()
+	_bestiary.name = "Bestiary"
+	_bestiary.set_script(BESTIARY_SCRIPT)
+	add_child(_bestiary)
+	var button := Button.new()
+	button.name = "BestiaryButton"
+	button.text = "BESTIARY"
+	button.custom_minimum_size = Vector2(148, 38)
+	button.size = Vector2(148, 38)
+	button.add_theme_font_size_override("font_size", 16)
+	var box := StyleBoxFlat.new()
+	box.bg_color = Color("4a2f18")
+	box.border_color = Color("8dc24a")
+	box.set_border_width_all(2)
+	box.set_corner_radius_all(6)
+	box.shadow_color = Color(0, 0, 0, 0.35)
+	box.shadow_size = 4
+	box.shadow_offset = Vector2(0, 3)
+	button.add_theme_stylebox_override("normal", box)
+	button.add_theme_color_override("font_color", Color("f2e3bd"))
+	button.add_theme_color_override("font_hover_color", Color("8dc24a"))
+	button.pressed.connect(_open_bestiary)
+	add_child(button)
+	_bestiary_button = button
+	get_viewport().size_changed.connect(_place_bestiary_button)
+	_place_bestiary_button()
+
+
+func _place_bestiary_button() -> void:
+	if _bestiary_button == null:
+		return
+	var view := get_viewport_rect().size
+	_bestiary_button.position = Vector2(view.x - _bestiary_button.size.x - 22.0, 20.0)
+
+
+func _open_bestiary() -> void:
+	if _bestiary != null:
+		_bestiary.call("open")
 
 
 func _on_island_pressed(id: String) -> void:
