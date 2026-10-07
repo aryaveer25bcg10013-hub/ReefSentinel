@@ -137,18 +137,25 @@ timeout 280 "$GODOT" --path . --script res://tools/verify_ui.gd
 ```
 
 Headless Godot cannot rasterize, so this one runs windowed, screenshots the viewport and counts
-pixels of known colours. Result: `PASS: every draw path ran without errors`, 10 screenshots in
+pixels of known colours. Result: `PASS: every draw path ran without errors`, 13 screenshots in
 [docs/shots/](docs/shots/index.html) (1152×648, all ~100 % non-black), peak **12** simultaneous
 enemies on screen.
 
 | What was measured | Result |
 |---|---|
 | Bestiary cover-green palette | 2469 samples |
-| Bestiary parchment | 3125 samples |
+| Bestiary parchment | 3127 samples |
 | Adaptation banner visible between waves | `true`, 2 text labels rendered |
-| Hull "critical" red on the bar | 2336 samples |
-| Damage vignette covered the viewport | size (1152, 648), intensity 0.361 |
-| Screen-edge redness, hurt vs healthy | **0.185 vs 0.051** |
+| Hull "critical" red on the bar | 2541 samples |
+| Damage vignette covered the viewport | size (1152, 648), intensity 0.379 |
+| Screen-edge redness, hurt vs healthy | **0.177 vs 0.052** |
+| The three arenas render different biomes | mean play-area colour delta **0.349 / 0.470 / 0.264** |
+
+The last row is the W4 acceptance check: the harness loads each island in turn, waits for its
+wave, and compares the average colour of the play area. Identical biomes would score ~0.00, so
+this is also the regression test for the configure-before-`add_child()` bug described in §2.
+The 13 screenshots are `01`–`09` for the map, bestiary, HUD, banner, dome, beam and a 12-enemy
+load frame, plus `10`/`11`/`12` for Redwake, Quiet Belt and Harrow respectively.
 
 Three real bugs were found and fixed by this harness: the damage vignette's `Control` was
 resolving to a **0×0 rect** (invisible in-game), the bestiary's page wash was drawn with a
